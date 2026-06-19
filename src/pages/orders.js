@@ -9,7 +9,7 @@ import { IconCog } from '../components/Icons';
 import { OrderCard } from '../components/OrderCard';
 import { OrdersActionsPanel } from '../components/OrdersActionsPanel';
 import { OrdersFilters } from '../components/OrdersFilters';
-import { OrdersSelectionBar } from '../components/OrdersSelectionBar';
+import { OrdersSelectionBar, ORDERS_PAGE_SIZES } from '../components/OrdersSelectionBar';
 import { OrdersSourceToggle } from '../components/OrdersSourceToggle';
 import { SyncStatusPanel } from '../components/SyncStatusPanel';
 import { SellasistConfigModal } from '../components/SellasistConfigModal';
@@ -80,6 +80,8 @@ function OrdersView() {
   });
   const [configModalOpen, setConfigModalOpen] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [ordersPage, setOrdersPage] = useState(1);
+  const [ordersPageSize, setOrdersPageSize] = useState(25);
 
   const abortRef = useRef(null);
   const bulkDownloading = bulkModal.phase === 'downloading';
@@ -467,6 +469,28 @@ function OrdersView() {
     [orders, filters]
   );
 
+  const ordersTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(filteredOrders.length / ordersPageSize) || 1),
+    [filteredOrders.length, ordersPageSize]
+  );
+
+  const safeOrdersPage = Math.min(Math.max(ordersPage, 1), ordersTotalPages);
+
+  const paginatedOrders = useMemo(() => {
+    const start = (safeOrdersPage - 1) * ordersPageSize;
+    return filteredOrders.slice(start, start + ordersPageSize);
+  }, [filteredOrders, ordersPageSize, safeOrdersPage]);
+
+  useEffect(() => {
+    setOrdersPage(1);
+  }, [filters, activeSource, ordersPageSize]);
+
+  useEffect(() => {
+    if (ordersPage !== safeOrdersPage) {
+      setOrdersPage(safeOrdersPage);
+    }
+  }, [ordersPage, safeOrdersPage]);
+
   const selectedOrders = useMemo(
     () => pickOrdersByKeys(orders, selectedIds),
     [orders, selectedIds]
@@ -509,8 +533,8 @@ function OrdersView() {
     activeSource === 'saved' ? 'Baza lokalna' : 'Bufor pobierania';
 
   const visibleOrderKeys = useMemo(
-    () => filteredOrders.map(getOrderKey).filter(Boolean),
-    [filteredOrders]
+    () => paginatedOrders.map(getOrderKey).filter(Boolean),
+    [paginatedOrders]
   );
 
   const allVisibleSelected =
@@ -665,11 +689,17 @@ function OrdersView() {
                     onDeleteSelected={() => deleteOrderKeys(selectedIds)}
                     onMoveSelectedToSaved={moveSelectedToSaved}
                     onMoveSelectedToBuffer={moveSelectedToBuffer}
+                    page={safeOrdersPage}
+                    pageSize={ordersPageSize}
+                    totalItems={filteredOrders.length}
+                    pageSizes={ORDERS_PAGE_SIZES}
+                    onPageChange={setOrdersPage}
+                    onPageSizeChange={setOrdersPageSize}
                   />
                 )}
 
                 <div className="space-y-5">
-                  {filteredOrders.map((order) => {
+                  {paginatedOrders.map((order) => {
                     const orderKey = getOrderKey(order);
                     return (
                       <OrderCard
