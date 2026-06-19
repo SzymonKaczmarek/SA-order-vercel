@@ -38,7 +38,7 @@ export function LoginPage() {
                 if (error) setError('');
               }}
               className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-accent"
-              placeholder="admin"
+              placeholder="login"
               autoComplete="username"
             />
           </div>
@@ -76,11 +76,6 @@ export function LoginPage() {
             </ButtonLabel>
           </button>
         </form>
-
-        <p className="text-[11px] text-slate-400 mt-6 text-center">
-          Demo lokalne: <code className="text-slate-600">admin</code> /{' '}
-          <code className="text-slate-600">admin123</code>
-        </p>
       </div>
     </div>
   );
