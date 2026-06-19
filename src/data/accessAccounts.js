@@ -1,3 +1,5 @@
+import { DEFAULT_USER } from './users';
+
 const ACCOUNTS_KEY = 'saor_access_accounts';
 const USERS_KEY = 'saor_access_account_users';
 
@@ -150,19 +152,19 @@ export function ensureDefaultAccessAccount(seedEmail) {
     return getActiveAccessAccount();
   }
 
-  const email = String(seedEmail || 'admin@example.com').trim().toLowerCase();
+  const email = String(seedEmail || DEFAULT_USER.email).trim().toLowerCase();
   const account = createAccessAccount({
     email,
     name: 'Konto domyślne',
   });
 
   addAccessAccountUser(account.id, {
-    username: 'admin',
-    password: 'admin123',
-    email,
-    firstName: 'Admin',
-    lastName: 'Demo',
-    role: 'admin',
+    username: DEFAULT_USER.username,
+    password: DEFAULT_USER.password,
+    email: DEFAULT_USER.email,
+    firstName: DEFAULT_USER.firstName,
+    lastName: DEFAULT_USER.lastName,
+    role: DEFAULT_USER.role,
   });
 
   setActiveAccessAccount(account.id);
