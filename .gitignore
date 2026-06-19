@@ -1,0 +1,7 @@
+node_modules/
+.cache/
+public/
+.netlify/
+.env
+.env.*
+!.env.example
