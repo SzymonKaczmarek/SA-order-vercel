@@ -1,9 +1,41 @@
-const PAGE_SIZE = 100;
+/** Mniejsze paczki = szybsza odpowiedź funkcji Netlify (limit ~10 s na darmowym planie). */
+const PAGE_SIZE = 50;
 const MAX_REQUESTS_PER_MINUTE = 150;
 const MINUTE_MS = 60_000;
+const MAX_FETCH_RETRIES = 3;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isAbortError(err, signal) {
+  if (signal?.aborted) return true;
+  const msg = String(err?.message || err || '');
+  return err?.name === 'AbortError' || /abort|anulow|terminated/i.test(msg);
+}
+
+async function fetchPageWithRetry(fetchPage, { signal }) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= MAX_FETCH_RETRIES; attempt += 1) {
+    if (signal?.aborted) {
+      throw new Error('Pobieranie anulowane.');
+    }
+
+    try {
+      return await fetchPage();
+    } catch (err) {
+      if (isAbortError(err, signal)) {
+        throw new Error('Pobieranie anulowane.');
+      }
+
+      lastError = err;
+      if (attempt >= MAX_FETCH_RETRIES) break;
+      await sleep(750 * attempt);
+    }
+  }
+
+  throw lastError || new Error('Nie udało się pobrać paczki zamówień.');
 }
 
 class RequestRateLimiter {
@@ -120,7 +152,10 @@ export async function downloadAllOrders(config, fetchPage, { onProgress, signal,
     await limiter.waitTurn();
     packageNum += 1;
 
-    const data = await fetchPage(buildFetchParams(offset, idRange));
+    const data = await fetchPageWithRetry(
+      () => fetchPage(buildFetchParams(offset, idRange)),
+      { signal }
+    );
     const rawBatch = Array.isArray(data.orders) ? data.orders : [];
     const batch = filterOrdersByIdRange(rawBatch, idRange);
     allOrders.push(...batch);

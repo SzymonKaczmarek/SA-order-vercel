@@ -80,8 +80,8 @@ export function BulkDownloadModal({
       <button
         type="button"
         aria-label="Zamknij"
-        onClick={isDownloading ? onCancel : onClose}
-        className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+        onClick={isDownloading ? undefined : onClose}
+        className={`absolute inset-0 bg-slate-900/60 backdrop-blur-sm ${isDownloading ? 'cursor-default' : ''}`}
       />
 
       <div
@@ -102,7 +102,7 @@ export function BulkDownloadModal({
               <div className="space-y-3">
                 <p className="text-sm text-slate-600">
                   Wybierz zakres zamówień do pobrania. Domyślnie pobierane są wszystkie dostępne
-                  rekordy (paginacja po 100).
+                  rekordy (paginacja po 50 – bezpieczniej przy limicie czasu Netlify).
                 </p>
 
                 <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 cursor-pointer">

@@ -11,7 +11,7 @@ import {
   SELLASIST_DEMO_PRESET,
 } from '../data/sellasistDemo';
 import { useSellasistConfig } from '../hooks/useSellasistConfig';
-import { testSellasistConnection } from '../hooks/useSellasistApi';
+import { testSellasistConnection, normalizeSellasistAccount } from '../hooks/useSellasistApi';
 
 export function SellasistConfigForm({ onSaved, compact = false }) {
   const { config, loaded, setConfig, isDemoMode } = useSellasistConfig();
@@ -150,7 +150,7 @@ export function SellasistConfigForm({ onSaved, compact = false }) {
             <input
               type="text"
               value={account}
-              onChange={(e) => setAccount(e.target.value.trim())}
+              onChange={(e) => setAccount(normalizeSellasistAccount(e.target.value))}
               disabled={useDemoData}
               className="flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm disabled:opacity-60"
               placeholder="twoje-konto"
