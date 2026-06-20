@@ -338,7 +338,8 @@ function OrdersView() {
       try {
         const result = await downloadAllOrders(
           config,
-          (params) => fetchSellasistOrders(config, params),
+          (params) =>
+            fetchSellasistOrders(config, params, { signal: abortRef.current.signal }),
           {
             signal: abortRef.current.signal,
             idRange,

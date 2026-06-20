@@ -6,7 +6,13 @@
 [functions]
   node_bundler = "esbuild"
 
+[functions."sellasist-orders"]
+  timeout = 26
+
+[functions."sellasist-test"]
+  timeout = 26
+
 [dev]
-  command = "npm run develop"
+  command = "npm run gatsby:dev"
   targetPort = 8000
   port = 8888
