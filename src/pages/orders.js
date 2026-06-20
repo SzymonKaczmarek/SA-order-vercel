@@ -10,6 +10,7 @@ import { OrderCard } from '../components/OrderCard';
 import { OrdersActionsPanel } from '../components/OrdersActionsPanel';
 import { OrdersFilters } from '../components/OrdersFilters';
 import { OrdersSelectionBar, ORDERS_PAGE_SIZES } from '../components/OrdersSelectionBar';
+import { OrdersPagination } from '../components/OrdersPagination';
 import { OrdersSourceToggle } from '../components/OrdersSourceToggle';
 import { SyncStatusPanel } from '../components/SyncStatusPanel';
 import { SellasistConfigModal } from '../components/SellasistConfigModal';
@@ -76,7 +77,7 @@ function OrdersView() {
     progress: INITIAL_PROGRESS,
     error: '',
     result: null,
-    idRange: null,
+    downloadScope: null,
   });
   const [configModalOpen, setConfigModalOpen] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
@@ -315,25 +316,45 @@ function OrdersView() {
       progress: INITIAL_PROGRESS,
       error: '',
       result: null,
-      idRange: null,
+      downloadScope: null,
     });
     setError('');
   }, [isConfigured]);
 
   const runBulkDownload = useCallback(
-    async (idRange) => {
+    async (downloadScope) => {
       if (!isConfigured) return;
 
       abortRef.current = new AbortController();
+      const importStartedAt = new Date().toISOString();
+
+      setBufferOrders([]);
+      setBufferMeta({
+        fetchedAt: importStartedAt,
+        fetchedAtLabel: formatFetchedAt(importStartedAt),
+      });
+      setActiveSource('buffer');
+
       setBulkModal({
         open: true,
         phase: 'downloading',
         progress: INITIAL_PROGRESS,
         error: '',
         result: null,
-        idRange,
+        downloadScope,
       });
       setError('');
+
+      const appendBatchToBuffer = ({ orders, meta, apiRaw: batchApiRaw }) => {
+        setBufferOrders(orders);
+        setApiRaw(batchApiRaw ?? orders);
+        if (meta) setApiMeta(meta);
+        setBufferMeta({
+          fetchedAt: importStartedAt,
+          fetchedAtLabel: formatFetchedAt(importStartedAt),
+        });
+        setActiveSource('buffer');
+      };
 
       try {
         const result = await downloadAllOrders(
@@ -342,7 +363,8 @@ function OrdersView() {
             fetchSellasistOrders(config, params, { signal: abortRef.current.signal }),
           {
             signal: abortRef.current.signal,
-            idRange,
+            downloadScope,
+            onBatch: appendBatchToBuffer,
             onProgress: (progress) => {
               setBulkModal((current) => ({
                 ...current,
@@ -356,7 +378,7 @@ function OrdersView() {
           ...current,
           phase: 'confirm',
           result,
-          idRange,
+          downloadScope,
           progress: {
             ...current.progress,
             packageNum: result.packages,
@@ -367,10 +389,12 @@ function OrdersView() {
           },
         }));
       } catch (err) {
+        if (abortRef.current?.signal.aborted) return;
+
         setBulkModal((current) => ({
           ...current,
           phase: 'error',
-          error: err.message || 'Nie udało się pobrać zamówień.',
+          error: `${err.message || 'Nie udało się pobrać zamówień.'} Pobrane do tej pory zamówienia są w buforze.`,
         }));
       }
     },
@@ -385,7 +409,7 @@ function OrdersView() {
       progress: INITIAL_PROGRESS,
       error: '',
       result: null,
-      idRange: null,
+      downloadScope: null,
     });
   }, []);
 
@@ -396,7 +420,7 @@ function OrdersView() {
       progress: INITIAL_PROGRESS,
       error: '',
       result: null,
-      idRange: null,
+      downloadScope: null,
     });
   }, []);
 
@@ -422,20 +446,9 @@ function OrdersView() {
   }, [activeAccountId, apiMeta, applySavedCache, bulkModal.result, closeBulkModal, config]);
 
   const handleBulkBufferOnly = useCallback(() => {
-    const result = bulkModal.result;
-    if (!result) return;
-
-    const fetchedAt = new Date().toISOString();
-    setBufferOrders(result.orders);
-    setBufferMeta({
-      fetchedAt,
-      fetchedAtLabel: formatFetchedAt(fetchedAt),
-    });
-    setApiRaw(result.raw);
-    setApiMeta(result.meta ?? apiMeta);
-    setActiveSource('buffer');
     closeBulkModal();
-  }, [apiMeta, bulkModal.result, closeBulkModal]);
+    setActiveSource('buffer');
+  }, [closeBulkModal]);
 
   const handleBulkSaveBoth = useCallback(() => {
     const result = bulkModal.result;
@@ -690,11 +703,8 @@ function OrdersView() {
                     onDeleteSelected={() => deleteOrderKeys(selectedIds)}
                     onMoveSelectedToSaved={moveSelectedToSaved}
                     onMoveSelectedToBuffer={moveSelectedToBuffer}
-                    page={safeOrdersPage}
                     pageSize={ordersPageSize}
-                    totalItems={filteredOrders.length}
                     pageSizes={ORDERS_PAGE_SIZES}
-                    onPageChange={setOrdersPage}
                     onPageSizeChange={setOrdersPageSize}
                   />
                 )}
@@ -713,6 +723,15 @@ function OrdersView() {
                     );
                   })}
                 </div>
+
+                {filteredOrders.length > 0 && (
+                  <OrdersPagination
+                    page={safeOrdersPage}
+                    pageSize={ordersPageSize}
+                    totalItems={filteredOrders.length}
+                    onPageChange={setOrdersPage}
+                  />
+                )}
               </div>
 
               <div className="space-y-4 xl:sticky xl:top-6">
@@ -760,7 +779,6 @@ function OrdersView() {
       <SellasistConfigModal
         open={configModalOpen}
         onClose={() => setConfigModalOpen(false)}
-        onSaved={loadSavedFromCache}
       />
 
       <BulkDownloadModal
@@ -769,7 +787,7 @@ function OrdersView() {
         progress={bulkModal.progress}
         error={bulkModal.error}
         resultCount={bulkModal.result?.orders?.length || 0}
-        idRange={bulkModal.idRange}
+        downloadScope={bulkModal.downloadScope}
         onStartDownload={runBulkDownload}
         onCancel={cancelBulkDownload}
         onSaveToDb={handleBulkSaveToDb}

@@ -1,17 +1,32 @@
-import React, { useEffect } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { ButtonLabel } from './ButtonLabel';
 import { IconX } from './Icons';
 import { SellasistConfigForm } from './SellasistConfigForm';
 
-export function SellasistConfigModal({ open, onClose, onSaved }) {
+export function SellasistConfigModal({ open, onClose }) {
+  const needsReloadRef = useRef(false);
+
+  const handleClose = useCallback(() => {
+    if (needsReloadRef.current) {
+      window.location.reload();
+      return;
+    }
+    onClose();
+  }, [onClose]);
+
+  const handleConfigSaved = useCallback(() => {
+    needsReloadRef.current = true;
+  }, []);
+
   useEffect(() => {
     if (!open) return undefined;
+    needsReloadRef.current = false;
 
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
     const handleKeyDown = (e) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') handleClose();
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -20,7 +35,7 @@ export function SellasistConfigModal({ open, onClose, onSaved }) {
       document.body.style.overflow = prev;
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [open, onClose]);
+  }, [open, handleClose]);
 
   if (!open) return null;
 
@@ -29,7 +44,7 @@ export function SellasistConfigModal({ open, onClose, onSaved }) {
       <button
         type="button"
         aria-label="Zamknij"
-        onClick={onClose}
+        onClick={handleClose}
         className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
       />
 
@@ -45,7 +60,7 @@ export function SellasistConfigModal({ open, onClose, onSaved }) {
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white text-slate-600 px-3 py-1.5 text-xs font-semibold hover:bg-slate-50"
           >
             <ButtonLabel icon={IconX} iconClassName="w-3.5 h-3.5 shrink-0">
@@ -55,12 +70,7 @@ export function SellasistConfigModal({ open, onClose, onSaved }) {
         </div>
 
         <div className="p-5">
-          <SellasistConfigForm
-            compact
-            onSaved={() => {
-              onSaved?.();
-            }}
-          />
+          <SellasistConfigForm compact onSaved={handleConfigSaved} />
         </div>
       </div>
     </div>

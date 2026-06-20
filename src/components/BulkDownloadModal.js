@@ -8,7 +8,7 @@ import {
   IconLayers,
   IconX,
 } from './Icons';
-import { parseOrderIdRange } from '../utils/bulkOrderDownload';
+import { formatDownloadScopeSummary, parseDownloadScope } from '../utils/bulkOrderDownload';
 
 function StatRow({ label, value }) {
   return (
@@ -25,7 +25,7 @@ export function BulkDownloadModal({
   progress,
   error,
   resultCount,
-  idRange,
+  downloadScope,
   onCancel,
   onStartDownload,
   onSaveToDb,
@@ -33,9 +33,10 @@ export function BulkDownloadModal({
   onSaveToBoth,
   onClose,
 }) {
-  const [useIdRange, setUseIdRange] = useState(false);
+  const [scope, setScope] = useState('all');
   const [idFrom, setIdFrom] = useState('');
   const [idTo, setIdTo] = useState('');
+  const [latestCount, setLatestCount] = useState('100');
   const [setupError, setSetupError] = useState('');
 
   useEffect(() => {
@@ -62,18 +63,17 @@ export function BulkDownloadModal({
   const isError = phase === 'error';
 
   const handleStart = () => {
-    const parsed = parseOrderIdRange(idFrom, idTo, { useRange: useIdRange });
+    const parsed = parseDownloadScope(scope, { idFrom, idTo, latestCount });
     if (!parsed.ok) {
       setSetupError(parsed.error);
       return;
     }
 
     setSetupError('');
-    onStartDownload(parsed.range);
+    onStartDownload(parsed.downloadScope);
   };
 
-  const rangeSummary =
-    idRange != null ? `ID ${idRange.from} – ${idRange.to}` : 'Wszystkie zamówienia';
+  const rangeSummary = formatDownloadScopeSummary(downloadScope);
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
@@ -105,12 +105,12 @@ export function BulkDownloadModal({
                   rekordy (paginacja po 50 – bezpieczniej przy limicie czasu Netlify).
                 </p>
 
-                <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 cursor-pointer">
+                <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 cursor-pointer has-[:checked]:border-brand-primary has-[:checked]:ring-2 has-[:checked]:ring-brand-primary/15">
                   <input
                     type="radio"
                     name="download-scope"
-                    checked={!useIdRange}
-                    onChange={() => setUseIdRange(false)}
+                    checked={scope === 'all'}
+                    onChange={() => setScope('all')}
                     className="mt-0.5"
                   />
                   <span>
@@ -127,8 +127,50 @@ export function BulkDownloadModal({
                   <input
                     type="radio"
                     name="download-scope"
-                    checked={useIdRange}
-                    onChange={() => setUseIdRange(true)}
+                    checked={scope === 'latest'}
+                    onChange={() => setScope('latest')}
+                    className="mt-0.5"
+                  />
+                  <span className="flex-1 space-y-3">
+                    <span>
+                      <span className="block text-sm font-semibold text-slate-900">
+                        Ostatnie X zamówień
+                      </span>
+                      <span className="block text-xs text-slate-500 mt-0.5">
+                        Pobierz najnowsze rekordy (offset 0, kolejne paczki w API Sellasist).
+                      </span>
+                    </span>
+
+                    {scope === 'latest' && (
+                      <div className="space-y-1">
+                        <label
+                          htmlFor="bulk-latest-count"
+                          className="text-[10px] font-bold uppercase tracking-wider text-slate-400"
+                        >
+                          Liczba zamówień
+                        </label>
+                        <input
+                          id="bulk-latest-count"
+                          type="number"
+                          min="1"
+                          step="1"
+                          inputMode="numeric"
+                          value={latestCount}
+                          onChange={(e) => setLatestCount(e.target.value)}
+                          placeholder="np. 100"
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                        />
+                      </div>
+                    )}
+                  </span>
+                </label>
+
+                <label className="flex items-start gap-3 rounded-2xl border border-slate-200 p-4 cursor-pointer has-[:checked]:border-brand-primary has-[:checked]:ring-2 has-[:checked]:ring-brand-primary/15">
+                  <input
+                    type="radio"
+                    name="download-scope"
+                    checked={scope === 'idRange'}
+                    onChange={() => setScope('idRange')}
                     className="mt-0.5"
                   />
                   <span className="flex-1 space-y-3">
@@ -142,7 +184,7 @@ export function BulkDownloadModal({
                       </span>
                     </span>
 
-                    {useIdRange && (
+                    {scope === 'idRange' && (
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
                           <label

@@ -16,19 +16,13 @@ export function OrdersSelectionBar({
   onDeleteSelected,
   onMoveSelectedToSaved,
   onMoveSelectedToBuffer,
-  page,
   pageSize,
-  totalItems,
   pageSizes = ORDERS_PAGE_SIZES,
-  onPageChange,
   onPageSizeChange,
 }) {
   const hasSelection = selectedCount > 0;
   const moveToSavedDisabled = !hasSelection || activeSource === 'saved';
   const moveToBufferDisabled = !hasSelection || activeSource === 'buffer';
-
-  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize) || 1);
-  const safePage = Math.min(Math.max(page, 1), totalPages);
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -98,22 +92,6 @@ export function OrdersSelectionBar({
             </option>
           ))}
         </select>
-        <button
-          type="button"
-          onClick={() => onPageChange(safePage - 1)}
-          disabled={safePage <= 1 || totalItems === 0}
-          className="rounded-xl border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          Poprzednia
-        </button>
-        <button
-          type="button"
-          onClick={() => onPageChange(safePage + 1)}
-          disabled={safePage >= totalPages || totalItems === 0}
-          className="rounded-xl border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          Następna
-        </button>
       </div>
     </div>
   );

@@ -112,8 +112,60 @@ export function parseOrderIdRange(idFromInput, idToInput, { useRange }) {
   return { ok: true, range: { from, to } };
 }
 
-function buildFetchParams(offset, idRange) {
-  const params = { limit: PAGE_SIZE, offset };
+export function parseLatestCountInput(input) {
+  const raw = String(input ?? '').trim();
+
+  if (!raw) {
+    return { ok: false, error: 'Podaj liczbę ostatnich zamówień do pobrania.' };
+  }
+
+  const count = Number(raw);
+
+  if (!Number.isInteger(count) || count < 1) {
+    return { ok: false, error: 'Liczba musi być dodatnią liczbą całkowitą.' };
+  }
+
+  return { ok: true, count };
+}
+
+export function parseDownloadScope(scope, { idFrom, idTo, latestCount }) {
+  if (scope === 'all') {
+    return { ok: true, downloadScope: { type: 'all' } };
+  }
+
+  if (scope === 'latest') {
+    const parsed = parseLatestCountInput(latestCount);
+    if (!parsed.ok) return parsed;
+    return { ok: true, downloadScope: { type: 'latest', latestCount: parsed.count } };
+  }
+
+  if (scope === 'idRange') {
+    const parsed = parseOrderIdRange(idFrom, idTo, { useRange: true });
+    if (!parsed.ok) return parsed;
+    return { ok: true, downloadScope: { type: 'idRange', idRange: parsed.range } };
+  }
+
+  return { ok: false, error: 'Wybierz sposób pobierania zamówień.' };
+}
+
+export function formatDownloadScopeSummary(downloadScope) {
+  if (!downloadScope || downloadScope.type === 'all') {
+    return 'Wszystkie zamówienia';
+  }
+
+  if (downloadScope.type === 'latest') {
+    return `Ostatnie ${downloadScope.latestCount} zamówień`;
+  }
+
+  if (downloadScope.type === 'idRange' && downloadScope.idRange) {
+    return `ID ${downloadScope.idRange.from} – ${downloadScope.idRange.to}`;
+  }
+
+  return '—';
+}
+
+function buildFetchParams(offset, idRange, limit = PAGE_SIZE) {
+  const params = { limit, offset };
 
   if (idRange?.from) {
     params.from_id = idRange.from - 1;
@@ -133,14 +185,26 @@ function shouldStopAfterBatch(rawBatch, idRange) {
   return minId > idRange.to;
 }
 
-export async function downloadAllOrders(config, fetchPage, { onProgress, signal, idRange }) {
+export async function downloadAllOrders(
+  config,
+  fetchPage,
+  { onProgress, onBatch, signal, downloadScope }
+) {
+  const idRange = downloadScope?.type === 'idRange' ? downloadScope.idRange : null;
+  const latestCount = downloadScope?.type === 'latest' ? downloadScope.latestCount : null;
+
   const limiter = new RequestRateLimiter(MAX_REQUESTS_PER_MINUTE);
   let offset = 0;
   let packageNum = 0;
   const allOrders = [];
   const startTime = Date.now();
   let hasMore = true;
-  let totalKnown = idRange ? idRange.to - idRange.from + 1 : null;
+  let totalKnown =
+    latestCount != null
+      ? latestCount
+      : idRange
+        ? idRange.to - idRange.from + 1
+        : null;
   let lastMeta = null;
   let lastRaw = null;
 
@@ -149,15 +213,29 @@ export async function downloadAllOrders(config, fetchPage, { onProgress, signal,
       throw new Error('Pobieranie anulowane.');
     }
 
+    if (latestCount != null && allOrders.length >= latestCount) {
+      break;
+    }
+
     await limiter.waitTurn();
     packageNum += 1;
 
+    const pageLimit =
+      latestCount != null ? Math.min(PAGE_SIZE, latestCount - allOrders.length) : PAGE_SIZE;
+
     const data = await fetchPageWithRetry(
-      () => fetchPage(buildFetchParams(offset, idRange)),
+      () => fetchPage(buildFetchParams(offset, idRange, pageLimit)),
       { signal }
     );
     const rawBatch = Array.isArray(data.orders) ? data.orders : [];
-    const batch = filterOrdersByIdRange(rawBatch, idRange);
+    let batch = filterOrdersByIdRange(rawBatch, idRange);
+
+    if (latestCount != null) {
+      const remaining = latestCount - allOrders.length;
+      if (remaining <= 0) break;
+      if (batch.length > remaining) batch = batch.slice(0, remaining);
+    }
+
     allOrders.push(...batch);
     lastMeta = data.meta ?? lastMeta;
     lastRaw = data.raw ?? lastRaw;
@@ -166,11 +244,13 @@ export async function downloadAllOrders(config, fetchPage, { onProgress, signal,
       await sleep(500);
     }
 
-    if (!idRange && data.total != null && totalKnown == null) {
+    if (!idRange && !latestCount && data.total != null && totalKnown == null) {
       totalKnown = Number(data.total);
     }
 
-    if (idRange) {
+    if (latestCount != null) {
+      hasMore = allOrders.length < latestCount && rawBatch.length >= pageLimit;
+    } else if (idRange) {
       hasMore = rawBatch.length >= PAGE_SIZE && !shouldStopAfterBatch(rawBatch, idRange);
     } else {
       hasMore = rawBatch.length >= PAGE_SIZE;
@@ -225,6 +305,14 @@ export async function downloadAllOrders(config, fetchPage, { onProgress, signal,
       status: hasMore ? 'downloading' : 'complete',
     });
 
+    onBatch?.({
+      packageNum,
+      batch,
+      orders: allOrders,
+      meta: lastMeta,
+      apiRaw: lastRaw,
+    });
+
     if (!hasMore) break;
     offset += PAGE_SIZE;
   }
@@ -236,6 +324,8 @@ export async function downloadAllOrders(config, fetchPage, { onProgress, signal,
     meta: lastMeta,
     apiRaw: lastRaw,
     total: totalKnown ?? allOrders.length,
+    downloadScope: downloadScope || { type: 'all' },
     idRange: idRange || null,
+    latestCount: latestCount ?? null,
   };
 }
