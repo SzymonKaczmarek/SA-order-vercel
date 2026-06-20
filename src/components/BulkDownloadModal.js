@@ -29,6 +29,7 @@ export function BulkDownloadModal({
   onCancel,
   onStartDownload,
   onSaveToDb,
+  onSaveToServerDb,
   onBufferOnly,
   onSaveToBoth,
   onClose,
@@ -316,6 +317,13 @@ export function BulkDownloadModal({
                   className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-brand-primary text-white px-4 py-3 text-sm font-semibold hover:opacity-90"
                 >
                   <ButtonLabel icon={IconDatabase}>Zapisz w bazie lokalnej</ButtonLabel>
+                </button>
+                <button
+                  type="button"
+                  onClick={onSaveToServerDb}
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 text-violet-800 px-4 py-3 text-sm font-semibold hover:bg-violet-100"
+                >
+                  <ButtonLabel icon={IconDatabase}>Zapisz w bazie danych (serwer)</ButtonLabel>
                 </button>
                 <button
                   type="button"

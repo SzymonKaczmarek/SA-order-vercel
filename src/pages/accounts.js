@@ -1,32 +1,133 @@
 import React, { useState } from 'react';
-import { Link } from 'gatsby';
+import { Link, navigate } from 'gatsby';
 import { BackToPanelLink, PageShell, RequireAuth } from '../components/Layout';
 import { ButtonLabel } from '../components/ButtonLabel';
-import { IconDatabase } from '../components/Icons';
+import { IconDatabase, IconTrash } from '../components/Icons';
+import { useAuth } from '../context/AuthContext';
 import { useAccessAccount } from '../context/AccessAccountContext';
+import { AUTH_STORAGE_KEY } from '../hooks/useAuth';
+import { getAccessAccountDisplayName } from '../data/accessAccounts';
+
+function AccountEditForm({ account, onSave, onCancel }) {
+  const [name, setName] = useState(account.name || '');
+  const [username, setUsername] = useState(account.username || '');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    setError('');
+
+    try {
+      onSave({
+        name,
+        username,
+        password: password || undefined,
+      });
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="border-t border-slate-100 p-5 space-y-4 bg-slate-50/50">
+      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Edycja konta</p>
+      <div className="space-y-1.5">
+        <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+          Nazwa konta
+        </label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+          required
+        />
+      </div>
+      <div className="grid sm:grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+            Login
+          </label>
+          <input
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+            autoComplete="off"
+            required
+          />
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+            Nowe hasło
+          </label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+            placeholder="Zostaw puste, aby nie zmieniać"
+            autoComplete="new-password"
+          />
+        </div>
+      </div>
+      {error && (
+        <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-xl px-3 py-2">
+          {error}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="submit"
+          className="rounded-xl bg-brand-primary text-white px-4 py-2 text-xs font-semibold"
+        >
+          Zapisz zmiany
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold hover:bg-white"
+        >
+          Anuluj
+        </button>
+      </div>
+    </form>
+  );
+}
 
 function AccountsView() {
+  const { user, logout } = useAuth();
   const {
     accounts,
     activeAccount,
     selectAccount,
     createAccount,
-    addUser,
-    getUsers,
+    updateAccount,
+    deleteAccount,
   } = useAccessAccount();
 
-  const [email, setEmail] = useState('');
   const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [expandedId, setExpandedId] = useState(activeAccount?.id || null);
-  const [userForm, setUserForm] = useState({
-    username: '',
-    password: '',
-    email: '',
-    firstName: '',
-    lastName: '',
-  });
+  const [editingId, setEditingId] = useState(null);
+
+  const syncLoggedUser = (account) => {
+    if (!user || user.username !== account.username) return;
+    if (typeof window === 'undefined') return;
+
+    const payload = {
+      ...user,
+      username: account.username,
+      firstName: account.name || account.username,
+      email: account.email || account.username,
+      accessAccountId: account.id,
+    };
+
+    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload));
+  };
 
   const handleCreateAccount = (e) => {
     e.preventDefault();
@@ -34,52 +135,78 @@ function AccountsView() {
     setMessage('');
 
     try {
-      const account = createAccount({ email, name });
-      setEmail('');
+      const account = createAccount({ name, username, password });
       setName('');
-      setExpandedId(account.id);
-      setMessage(`Utworzono konto dostępu: ${account.email}`);
+      setUsername('');
+      setPassword('');
+      setMessage(
+        `Utworzono konto: ${getAccessAccountDisplayName(account)} (login: ${account.username})`
+      );
     } catch (err) {
       setError(err.message);
     }
   };
 
-  const handleAddUser = (e, accessAccountId) => {
-    e.preventDefault();
+  const handleSaveEdit = (accountId, payload) => {
+    const original = accounts.find((item) => item.id === accountId);
+    const wasLoggedInAs =
+      user?.accessAccountId === accountId || user?.username === original?.username;
+
+    const updated = updateAccount(accountId, payload);
+    setEditingId(null);
+    setMessage(`Zaktualizowano konto: ${getAccessAccountDisplayName(updated)}`);
+
+    if (wasLoggedInAs) {
+      syncLoggedUser(updated);
+    }
+  };
+
+  const handleDeleteAccount = (account) => {
+    const label = getAccessAccountDisplayName(account);
+    const confirmed = window.confirm(
+      `Usunąć konto „${label}”?\n\nTej operacji nie można cofnąć. Konfiguracja i zamówienia tego konta pozostaną w pamięci przeglądarki / na serwerze pod starym identyfikatorem.`
+    );
+
+    if (!confirmed) return;
+
     setError('');
     setMessage('');
 
     try {
-      addUser(accessAccountId, userForm);
-      setUserForm({
-        username: '',
-        password: '',
-        email: '',
-        firstName: '',
-        lastName: '',
-      });
-      setMessage('Dodano użytkownika do konta dostępu.');
+      const isOwnAccount = user?.username === account.username;
+      deleteAccount(account.id);
+
+      if (isOwnAccount) {
+        logout();
+        navigate('/');
+        return;
+      }
+
+      if (editingId === account.id) {
+        setEditingId(null);
+      }
+
+      setMessage(`Usunięto konto: ${label}`);
     } catch (err) {
       setError(err.message);
     }
   };
 
   return (
-    <PageShell title="Konta dostępu">
+    <PageShell title="Konta">
       <div className="space-y-6 max-w-3xl">
         <BackToPanelLink />
 
         <section className="rounded-3xl bg-white border border-slate-200 p-6 space-y-3">
-          <h2 className="text-sm font-semibold text-slate-900">Izolacja danych</h2>
+          <h2 className="text-sm font-semibold text-slate-900">Konta do logowania</h2>
           <p className="text-sm text-slate-600">
-            Każde konto dostępu (e-mail) ma własną konfigurację Sellasist, bazę zamówień w
-            localStorage oraz osobną listę użytkowników. Przełącz aktywne konto, aby pracować na
-            innych danych.
+            Każde konto ma własny login i hasło do panelu, konfigurację Sellasist oraz osobną bazę
+            zamówień. Logujesz się danymi konta — po zalogowaniu pracujesz na jego danych.
           </p>
           {activeAccount && (
             <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-2xl px-4 py-2">
-              Aktywne konto: <strong>{activeAccount.email}</strong>
-              {activeAccount.name ? ` (${activeAccount.name})` : ''}
+              Aktywne konto: <strong>{getAccessAccountDisplayName(activeAccount)}</strong>
+              {activeAccount.username ? ` · login: ${activeAccount.username}` : ''}
             </p>
           )}
         </section>
@@ -88,31 +215,47 @@ function AccountsView() {
           onSubmit={handleCreateAccount}
           className="rounded-3xl bg-white border border-slate-200 p-6 space-y-4"
         >
-          <h2 className="text-sm font-semibold text-slate-900">Nowe konto dostępu</h2>
+          <h2 className="text-sm font-semibold text-slate-900">Nowe konto</h2>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+              Nazwa konta
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm"
+              placeholder="np. Sklep główny, Allegro, B2B"
+              required
+            />
+          </div>
           <div className="grid sm:grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                E-mail konta
+                Login do panelu
               </label>
               <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
                 className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm"
-                placeholder="sklep@example.com"
+                placeholder="np. sklep-glowny"
+                autoComplete="off"
                 required
               />
             </div>
             <div className="space-y-1.5">
               <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Nazwa (opcjonalnie)
+                Hasło do panelu
               </label>
               <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm"
-                placeholder="Sklep główny"
+                placeholder="Hasło logowania"
+                autoComplete="new-password"
+                required
               />
             </div>
           </div>
@@ -120,7 +263,7 @@ function AccountsView() {
             type="submit"
             className="inline-flex items-center gap-2 rounded-2xl bg-brand-primary text-white px-5 py-2.5 text-sm font-semibold"
           >
-            <ButtonLabel icon={IconDatabase}>Utwórz konto dostępu</ButtonLabel>
+            <ButtonLabel icon={IconDatabase}>Utwórz konto</ButtonLabel>
           </button>
         </form>
 
@@ -141,9 +284,10 @@ function AccountsView() {
           </h2>
 
           {accounts.map((account) => {
-            const users = getUsers(account.id);
             const isActive = activeAccount?.id === account.id;
-            const isExpanded = expandedId === account.id;
+            const isEditing = editingId === account.id;
+            const label = getAccessAccountDisplayName(account);
+            const canDelete = accounts.length > 1;
 
             return (
               <article
@@ -154,10 +298,11 @@ function AccountsView() {
               >
                 <div className="p-5 flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="font-semibold text-slate-900">{account.email}</p>
+                    <p className="font-semibold text-slate-900">{label}</p>
                     <p className="text-xs text-slate-500 mt-1">
-                      {account.name} · {users.length} użytk. · utworzono{' '}
-                      {new Date(account.createdAt).toLocaleString('pl-PL')}
+                      login: <span className="font-mono">{account.username || '—'}</span>
+                      {' · '}
+                      utworzono {new Date(account.createdAt).toLocaleString('pl-PL')}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -166,7 +311,7 @@ function AccountsView() {
                         type="button"
                         onClick={() => {
                           selectAccount(account.id);
-                          setMessage(`Aktywne konto: ${account.email}`);
+                          setMessage(`Aktywne konto: ${label}`);
                         }}
                         className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold hover:bg-slate-50"
                       >
@@ -180,10 +325,22 @@ function AccountsView() {
                     )}
                     <button
                       type="button"
-                      onClick={() => setExpandedId(isExpanded ? null : account.id)}
+                      onClick={() => {
+                        setEditingId(isEditing ? null : account.id);
+                        setError('');
+                      }}
                       className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold hover:bg-slate-50"
                     >
-                      {isExpanded ? 'Zwiń użytkowników' : 'Użytkownicy'}
+                      {isEditing ? 'Zwiń' : 'Edytuj'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteAccount(account)}
+                      disabled={!canDelete}
+                      className="inline-flex items-center gap-1 rounded-xl border border-red-200 text-red-700 px-3 py-2 text-xs font-semibold hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <IconTrash className="w-3.5 h-3.5" />
+                      Usuń
                     </button>
                     <Link
                       to="/orders"
@@ -194,81 +351,12 @@ function AccountsView() {
                   </div>
                 </div>
 
-                {isExpanded && (
-                  <div className="border-t border-slate-100 p-5 space-y-4 bg-slate-50/50">
-                    <div>
-                      <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
-                        Użytkownicy konta
-                      </h3>
-                      {users.length === 0 ? (
-                        <p className="text-sm text-slate-400">Brak użytkowników.</p>
-                      ) : (
-                        <ul className="space-y-2">
-                          {users.map((user) => (
-                            <li
-                              key={user.username}
-                              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm flex justify-between gap-2"
-                            >
-                              <span>
-                                <strong>{user.username}</strong> · {user.email}
-                              </span>
-                              <span className="text-xs text-slate-400">
-                                {user.firstName} {user.lastName}
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-
-                    <form
-                      onSubmit={(e) => handleAddUser(e, account.id)}
-                      className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3"
-                    >
-                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                        Dodaj użytkownika
-                      </p>
-                      <div className="grid sm:grid-cols-2 gap-2">
-                        <input
-                          type="text"
-                          value={userForm.username}
-                          onChange={(e) => setUserForm({ ...userForm, username: e.target.value })}
-                          placeholder="Login"
-                          className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                          required
-                        />
-                        <input
-                          type="password"
-                          value={userForm.password}
-                          onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
-                          placeholder="Hasło"
-                          className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                          required
-                        />
-                        <input
-                          type="email"
-                          value={userForm.email}
-                          onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
-                          placeholder="E-mail użytkownika"
-                          className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                          required
-                        />
-                        <input
-                          type="text"
-                          value={userForm.firstName}
-                          onChange={(e) => setUserForm({ ...userForm, firstName: e.target.value })}
-                          placeholder="Imię"
-                          className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                        />
-                      </div>
-                      <button
-                        type="submit"
-                        className="rounded-xl bg-slate-800 text-white px-4 py-2 text-xs font-semibold"
-                      >
-                        Dodaj użytkownika
-                      </button>
-                    </form>
-                  </div>
+                {isEditing && (
+                  <AccountEditForm
+                    account={account}
+                    onSave={(payload) => handleSaveEdit(account.id, payload)}
+                    onCancel={() => setEditingId(null)}
+                  />
                 )}
               </article>
             );

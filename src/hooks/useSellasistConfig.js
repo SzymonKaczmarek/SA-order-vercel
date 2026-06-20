@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAccessAccount } from '../context/AccessAccountContext';
+import { getSellasistConfigFromDb, setSellasistConfigToDb } from './useAppDbApi';
+import { logEvent } from '../utils/eventLog';
 
 const CONFIG_KEY = 'saor_sellasist_config';
 
@@ -94,8 +96,27 @@ export function useSellasistConfig() {
       return;
     }
 
-    setConfigState(readSellasistConfig(activeAccountId));
-    setLoaded(true);
+    let mounted = true;
+
+    const bootstrap = async () => {
+      const localConfig = readSellasistConfig(activeAccountId);
+      setConfigState(localConfig);
+      setLoaded(true);
+
+      try {
+        const remoteConfig = await getSellasistConfigFromDb(activeAccountId);
+        if (!mounted || !remoteConfig) return;
+        writeSellasistConfig(activeAccountId, remoteConfig);
+        setConfigState(readSellasistConfig(activeAccountId));
+      } catch (_e) {
+        // fallback lokalny
+      }
+    };
+
+    bootstrap();
+    return () => {
+      mounted = false;
+    };
   }, [accountReady, activeAccountId]);
 
   const setConfig = useCallback(
@@ -103,6 +124,31 @@ export function useSellasistConfig() {
       if (!activeAccountId) return;
       writeSellasistConfig(activeAccountId, next);
       setConfigState(readSellasistConfig(activeAccountId));
+      setSellasistConfigToDb(activeAccountId, {
+        account: (next.account || '').trim(),
+        apiKey: (next.apiKey || '').trim(),
+        useDemoData: Boolean(next.useDemoData),
+      }).catch((err) => {
+        logEvent({
+          level: 'error',
+          category: 'config',
+          action: 'config.save.error',
+          message: 'Błąd zapisu konfiguracji na serwerze',
+          details: { accessAccountId: activeAccountId, error: err?.message },
+        });
+      });
+      logEvent({
+        level: 'info',
+        category: 'config',
+        action: 'config.save',
+        message: 'Zapisano konfigurację Sellasist',
+        details: {
+          accessAccountId: activeAccountId,
+          account: (next.account || '').trim(),
+          useDemoData: Boolean(next.useDemoData),
+          apiKey: next.apiKey ? '[ukryte]' : '',
+        },
+      });
     },
     [activeAccountId]
   );

@@ -16,6 +16,53 @@ function generateId() {
   return `acc_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function readLegacyUsersMap() {
+  if (typeof window === 'undefined') return {};
+  return safeParse(window.localStorage.getItem(USERS_KEY), {});
+}
+
+function migrateLegacyAccountCredentials(account, usersMap) {
+  if (account.username && account.password) {
+    return account;
+  }
+
+  const legacyUsers = Array.isArray(usersMap[account.id]) ? usersMap[account.id] : [];
+  if (legacyUsers.length === 0) {
+    return account;
+  }
+
+  const primary = legacyUsers[0];
+  return {
+    ...account,
+    username: String(primary.username || '').trim(),
+    password: String(primary.password || ''),
+    email: String(primary.email || account.email || '').trim(),
+  };
+}
+
+function migrateAccountsStore(store) {
+  const usersMap = readLegacyUsersMap();
+  let changed = false;
+
+  const accounts = store.accounts.map((account) => {
+    const migrated = migrateLegacyAccountCredentials(account, usersMap);
+    if (migrated !== account) {
+      changed = true;
+    }
+    return migrated;
+  });
+
+  if (!changed) {
+    return store;
+  }
+
+  const next = { ...store, accounts };
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(next));
+  }
+  return next;
+}
+
 export function readAccessAccountsStore() {
   if (typeof window === 'undefined') {
     return { accounts: [], activeId: null };
@@ -26,10 +73,12 @@ export function readAccessAccountsStore() {
     activeId: null,
   });
 
-  return {
+  const store = {
     accounts: Array.isArray(data.accounts) ? data.accounts : [],
     activeId: data.activeId || null,
   };
+
+  return migrateAccountsStore(store);
 }
 
 function writeAccessAccountsStore(store) {
@@ -44,12 +93,23 @@ export function readAccessAccountUsers(accessAccountId) {
   return Array.isArray(all[accessAccountId]) ? all[accessAccountId] : [];
 }
 
-function writeAccessAccountUsers(accessAccountId, users) {
-  if (typeof window === 'undefined' || !accessAccountId) return;
+export function writeAccessStoreSnapshot({ accounts, activeId, users }) {
+  if (typeof window === 'undefined') return;
 
-  const all = safeParse(window.localStorage.getItem(USERS_KEY), {});
-  all[accessAccountId] = users;
-  window.localStorage.setItem(USERS_KEY, JSON.stringify(all));
+  const usersMap = users && typeof users === 'object' ? users : {};
+  window.localStorage.setItem(USERS_KEY, JSON.stringify(usersMap));
+
+  writeAccessAccountsStore({
+    accounts: Array.isArray(accounts) ? accounts : [],
+    activeId: activeId || null,
+  });
+
+  readAccessAccountsStore();
+}
+
+export function readAccessUsersMap() {
+  if (typeof window === 'undefined') return {};
+  return safeParse(window.localStorage.getItem(USERS_KEY), {});
 }
 
 export function getActiveAccessAccount() {
@@ -58,19 +118,60 @@ export function getActiveAccessAccount() {
   return store.accounts.find((item) => item.id === store.activeId) || null;
 }
 
-export function formatAccessAccountLabel(account) {
+export function getAccessAccountDisplayName(account) {
   if (!account) return '—';
+  const name = String(account.name || '').trim();
+  if (name) return name;
+  const username = String(account.username || '').trim();
+  return username || '—';
+}
 
-  if (account.name && account.name !== account.email) {
-    return `${account.email} · ${account.name}`;
-  }
-
-  return account.email;
+export function formatAccessAccountLabel(account) {
+  return getAccessAccountDisplayName(account);
 }
 
 export function formatAccessAccountHeader(account) {
-  if (!account) return 'Konto dostępu: —';
-  return `Konto dostępu: ${formatAccessAccountLabel(account)}`;
+  if (!account) return 'Konto: —';
+  return `Konto: ${getAccessAccountDisplayName(account)}`;
+}
+
+export function isUsernameTaken(username, exceptAccountId = null) {
+  const trimmed = String(username || '').trim();
+  if (!trimmed) return false;
+
+  const store = readAccessAccountsStore();
+  return store.accounts.some(
+    (item) => item.username === trimmed && item.id !== exceptAccountId
+  );
+}
+
+export function accountToAuthUser(account) {
+  return {
+    username: account.username,
+    password: account.password,
+    email: account.email || account.username,
+    firstName: account.name || account.username,
+    lastName: '',
+    role: account.role || 'user',
+  };
+}
+
+export function findAccessAccountByCredentials(username, password) {
+  const trimmedUsername = String(username || '').trim();
+  const store = readAccessAccountsStore();
+
+  const account = store.accounts.find(
+    (item) => item.username === trimmedUsername && item.password === password
+  );
+
+  if (!account) {
+    return null;
+  }
+
+  return {
+    account,
+    user: accountToAuthUser(account),
+  };
 }
 
 export function setActiveAccessAccount(accessAccountId) {
@@ -84,23 +185,44 @@ export function setActiveAccessAccount(accessAccountId) {
   return next.accounts.find((item) => item.id === accessAccountId);
 }
 
-export function createAccessAccount({ email, name }) {
-  const trimmedEmail = String(email || '').trim().toLowerCase();
+export function createAccessAccount({ name, username, password }) {
   const trimmedName = String(name || '').trim();
+  const trimmedUsername = String(username || '').trim();
+  const trimmedPassword = String(password || '');
 
-  if (!trimmedEmail) {
-    throw new Error('Podaj adres e-mail konta dostępu.');
+  if (!trimmedName) {
+    throw new Error('Podaj nazwę konta.');
+  }
+
+  if (!trimmedUsername) {
+    throw new Error('Podaj login do panelu.');
+  }
+
+  if (!trimmedPassword) {
+    throw new Error('Podaj hasło do panelu.');
+  }
+
+  if (isUsernameTaken(trimmedUsername)) {
+    throw new Error('Ten login jest już zajęty.');
   }
 
   const store = readAccessAccountsStore();
-  if (store.accounts.some((item) => item.email === trimmedEmail)) {
-    throw new Error('Konto z tym adresem e-mail już istnieje.');
+  const normalizedName = trimmedName.toLowerCase();
+  if (
+    store.accounts.some(
+      (item) => getAccessAccountDisplayName(item).toLowerCase() === normalizedName
+    )
+  ) {
+    throw new Error('Konto o tej nazwie już istnieje.');
   }
 
   const account = {
     id: generateId(),
-    email: trimmedEmail,
-    name: trimmedName || trimmedEmail,
+    name: trimmedName,
+    username: trimmedUsername,
+    password: trimmedPassword,
+    email: '',
+    role: 'user',
     createdAt: new Date().toISOString(),
   };
 
@@ -110,40 +232,94 @@ export function createAccessAccount({ email, name }) {
   };
 
   writeAccessAccountsStore(next);
-  writeAccessAccountUsers(account.id, []);
   return account;
 }
 
-export function addAccessAccountUser(accessAccountId, user) {
-  const username = String(user.username || '').trim();
-  const password = String(user.password || '');
-  const email = String(user.email || '').trim().toLowerCase();
-  const firstName = String(user.firstName || '').trim();
-  const lastName = String(user.lastName || '').trim();
+export function updateAccessAccount(accountId, { name, username, password }) {
+  const store = readAccessAccountsStore();
+  const index = store.accounts.findIndex((item) => item.id === accountId);
 
-  if (!username || !password || !email) {
-    throw new Error('Podaj login, hasło i e-mail użytkownika.');
+  if (index === -1) {
+    throw new Error('Nie znaleziono konta.');
   }
 
-  const users = readAccessAccountUsers(accessAccountId);
-  if (users.some((item) => item.username === username)) {
-    throw new Error('Użytkownik o tym loginie już istnieje w tym koncie.');
+  const current = store.accounts[index];
+  const trimmedName = String(name || '').trim();
+  const trimmedUsername = String(username || '').trim();
+  const nextPassword =
+    password !== undefined && String(password).length > 0
+      ? String(password)
+      : current.password;
+
+  if (!trimmedName) {
+    throw new Error('Podaj nazwę konta.');
   }
 
-  const entry = {
-    username,
-    password,
-    email,
-    firstName: firstName || username,
-    lastName: lastName || '',
-    role: user.role || 'user',
+  if (!trimmedUsername) {
+    throw new Error('Podaj login do panelu.');
+  }
+
+  if (!nextPassword) {
+    throw new Error('Podaj hasło do panelu.');
+  }
+
+  if (isUsernameTaken(trimmedUsername, accountId)) {
+    throw new Error('Ten login jest już zajęty.');
+  }
+
+  const normalizedName = trimmedName.toLowerCase();
+  if (
+    store.accounts.some(
+      (item) =>
+        item.id !== accountId &&
+        getAccessAccountDisplayName(item).toLowerCase() === normalizedName
+    )
+  ) {
+    throw new Error('Konto o tej nazwie już istnieje.');
+  }
+
+  const updated = {
+    ...current,
+    name: trimmedName,
+    username: trimmedUsername,
+    password: nextPassword,
   };
 
-  writeAccessAccountUsers(accessAccountId, [...users, entry]);
-  return entry;
+  const accounts = [...store.accounts];
+  accounts[index] = updated;
+  writeAccessAccountsStore({ ...store, accounts });
+  return updated;
 }
 
-export function ensureDefaultAccessAccount(seedEmail) {
+export function deleteAccessAccount(accountId) {
+  const store = readAccessAccountsStore();
+
+  if (store.accounts.length <= 1) {
+    throw new Error('Nie można usunąć ostatniego konta.');
+  }
+
+  const deletedAccount = store.accounts.find((item) => item.id === accountId);
+  if (!deletedAccount) {
+    throw new Error('Nie znaleziono konta.');
+  }
+
+  const accounts = store.accounts.filter((item) => item.id !== accountId);
+  const activeId = store.activeId === accountId ? accounts[0]?.id || null : store.activeId;
+
+  writeAccessAccountsStore({ accounts, activeId });
+
+  if (typeof window !== 'undefined') {
+    const usersMap = readLegacyUsersMap();
+    if (usersMap[accountId]) {
+      delete usersMap[accountId];
+      window.localStorage.setItem(USERS_KEY, JSON.stringify(usersMap));
+    }
+  }
+
+  return { deletedAccount, activeId };
+}
+
+export function ensureDefaultAccessAccount() {
   const store = readAccessAccountsStore();
   if (store.accounts.length > 0) {
     if (!store.activeId && store.accounts[0]) {
@@ -152,21 +328,17 @@ export function ensureDefaultAccessAccount(seedEmail) {
     return getActiveAccessAccount();
   }
 
-  const email = String(seedEmail || DEFAULT_USER.email).trim().toLowerCase();
   const account = createAccessAccount({
-    email,
     name: 'Konto domyślne',
-  });
-
-  addAccessAccountUser(account.id, {
     username: DEFAULT_USER.username,
     password: DEFAULT_USER.password,
-    email: DEFAULT_USER.email,
-    firstName: DEFAULT_USER.firstName,
-    lastName: DEFAULT_USER.lastName,
-    role: DEFAULT_USER.role,
   });
 
-  setActiveAccessAccount(account.id);
-  return account;
+  const storeAfter = readAccessAccountsStore();
+  const accounts = storeAfter.accounts.map((item) =>
+    item.id === account.id ? { ...item, role: DEFAULT_USER.role } : item
+  );
+  writeAccessAccountsStore({ ...storeAfter, accounts, activeId: account.id });
+
+  return getActiveAccessAccount();
 }

@@ -9,6 +9,10 @@ function buildEntryKey(accessAccountId, config) {
   return `${accessAccountId || 'default'}::${getConfigKey(config)}`;
 }
 
+export function buildOrdersScopeKey(accessAccountId, config) {
+  return buildEntryKey(accessAccountId, config);
+}
+
 function safeParse(raw, fallback) {
   if (!raw) return fallback;
   try {

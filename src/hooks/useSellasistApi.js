@@ -1,5 +1,6 @@
 import { getDemoConnectionResult, getDemoOrders } from '../data/sellasistDemo';
 import { isDemoMode } from './useSellasistConfig';
+import { logEvent } from '../utils/eventLog';
 
 function getBaseUrl() {
   if (typeof window === 'undefined') return '';
@@ -42,6 +43,17 @@ function normalizeNetlifyFetchError(err, path) {
 
 async function callNetlifyFunction(path, payload, { signal } = {}) {
   const url = `${getBaseUrl()}/.netlify/functions/${path}`;
+  const startedAt = Date.now();
+  const safePayload = { ...payload };
+  if (safePayload.apiKey) safePayload.apiKey = '[ukryte]';
+
+  logEvent({
+    level: 'system',
+    category: 'api',
+    action: `api.${path}.request`,
+    message: `Zapytanie API: ${path}`,
+    details: { path, payload: safePayload },
+  });
 
   let res;
   try {
@@ -52,19 +64,69 @@ async function callNetlifyFunction(path, payload, { signal } = {}) {
       signal,
     });
   } catch (err) {
-    throw normalizeNetlifyFetchError(err, path);
+    const normalized = normalizeNetlifyFetchError(err, path);
+    logEvent({
+      level: 'error',
+      category: 'api',
+      action: `api.${path}.error`,
+      message: `Błąd połączenia API: ${path}`,
+      details: {
+        path,
+        durationMs: Date.now() - startedAt,
+        error: normalized.message,
+      },
+    });
+    throw normalized;
   }
 
   let data = null;
   try {
     data = await res.json();
   } catch (_e) {
-    throw new Error(`Nieprawidłowa odpowiedź serwera (${res.status}).`);
+    const parseError = new Error(`Nieprawidłowa odpowiedź serwera (${res.status}).`);
+    logEvent({
+      level: 'error',
+      category: 'api',
+      action: `api.${path}.error`,
+      message: `Nieprawidłowa odpowiedź API: ${path}`,
+      details: {
+        path,
+        status: res.status,
+        durationMs: Date.now() - startedAt,
+      },
+    });
+    throw parseError;
   }
 
   if (!res.ok) {
-    throw new Error(data?.error || `Błąd serwera (${res.status}).`);
+    const apiError = new Error(data?.error || `Błąd serwera (${res.status}).`);
+    logEvent({
+      level: 'error',
+      category: 'api',
+      action: `api.${path}.error`,
+      message: `Błąd API: ${path}`,
+      details: {
+        path,
+        status: res.status,
+        durationMs: Date.now() - startedAt,
+        error: data?.error || apiError.message,
+      },
+    });
+    throw apiError;
   }
+
+  logEvent({
+    level: 'system',
+    category: 'api',
+    action: `api.${path}.response`,
+    message: `Odpowiedź API: ${path}`,
+    details: {
+      path,
+      status: res.status,
+      durationMs: Date.now() - startedAt,
+      meta: data?.meta || null,
+    },
+  });
 
   return data;
 }

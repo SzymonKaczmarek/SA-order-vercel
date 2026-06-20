@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ButtonLabel } from './ButtonLabel';
 import {
   IconBookOpen,
+  IconEye,
   IconPlug,
   IconSave,
   IconToggleOff,
@@ -22,6 +23,7 @@ export function SellasistConfigForm({ onSaved, compact = false }) {
   const [error, setError] = useState('');
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
 
   useEffect(() => {
     if (!loaded) return;
@@ -163,15 +165,27 @@ export function SellasistConfigForm({ onSaved, compact = false }) {
           <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">
             Klucz API
           </label>
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            disabled={useDemoData}
-            className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm disabled:opacity-60"
-            placeholder={useDemoData ? 'Nie wymagany w trybie demo' : 'apiKey z panelu Sellasist'}
-            autoComplete="off"
-          />
+          <div className="flex items-center gap-2">
+            <input
+              type={showApiKey ? 'text' : 'password'}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              disabled={useDemoData}
+              className="flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm disabled:opacity-60"
+              placeholder={useDemoData ? 'Nie wymagany w trybie demo' : 'apiKey z panelu Sellasist'}
+              autoComplete="off"
+            />
+            <button
+              type="button"
+              onClick={() => setShowApiKey((current) => !current)}
+              disabled={useDemoData}
+              aria-label={showApiKey ? 'Ukryj klucz API' : 'Pokaż klucz API'}
+              className="inline-flex items-center gap-1 rounded-2xl border border-slate-200 bg-white px-3 py-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-60"
+            >
+              <IconEye className="w-4 h-4" />
+              {showApiKey ? 'Ukryj' : 'Pokaż'}
+            </button>
+          </div>
         </div>
 
         {message && (

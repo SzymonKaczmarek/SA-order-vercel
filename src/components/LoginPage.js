@@ -21,7 +21,7 @@ export function LoginPage() {
       <div className="max-w-md w-full rounded-3xl shadow-xl border border-slate-200 p-8 bg-white">
         <div className="text-center mb-6">
           <h1 className="text-2xl font-semibold text-slate-900">SA Order Reader</h1>
-          <p className="text-sm text-slate-500 mt-2">Panel integracji z Sellasist</p>
+          <p className="text-sm text-slate-500 mt-2">Zaloguj się loginem i hasłem konta</p>
           <div className="w-16 h-1 bg-brand-accent mx-auto mt-4 rounded-full" />
         </div>
 

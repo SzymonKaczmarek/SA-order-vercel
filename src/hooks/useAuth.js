@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  readAccessAccountUsers,
-  readAccessAccountsStore,
+  findAccessAccountByCredentials,
   setActiveAccessAccount,
 } from '../data/accessAccounts';
 import { USERS } from '../data/users';
+import { logEvent } from '../utils/eventLog';
 
 const STORAGE_KEY = 'saor_logged_user';
 
@@ -16,23 +16,7 @@ function getBaseUrl() {
 }
 
 function findAccessAccountUser(username, password) {
-  if (typeof window === 'undefined') return null;
-
-  const trimmedUsername = username.trim();
-  const store = readAccessAccountsStore();
-
-  for (const account of store.accounts) {
-    const users = readAccessAccountUsers(account.id);
-    const found = users.find(
-      (item) => item.username === trimmedUsername && item.password === password
-    );
-
-    if (found) {
-      return { account, user: found };
-    }
-  }
-
-  return null;
+  return findAccessAccountByCredentials(username, password);
 }
 
 function persistLoggedUser(payload) {
@@ -78,19 +62,38 @@ export function useAuthInternal() {
       const data = await res.json();
 
       if (res.ok && data.username) {
+        if (data.accessAccountId) {
+          setActiveAccessAccount(data.accessAccountId);
+        }
+
         const payload = {
           username: data.username,
           role: data.role,
           firstName: data.firstName,
           lastName: data.lastName,
           email: data.email,
+          accessAccountId: data.accessAccountId || null,
         };
         persistLoggedUser(payload);
         setUser(payload);
+        logEvent({
+          level: 'info',
+          category: 'auth',
+          action: 'auth.login.success',
+          message: `Logowanie: ${payload.username}`,
+          details: { role: payload.role, accessAccountId: payload.accessAccountId },
+        });
         return true;
       }
 
       if (res.status === 401 || res.status === 400) {
+        logEvent({
+          level: 'warn',
+          category: 'auth',
+          action: 'auth.login.failed',
+          message: 'Nieudane logowanie',
+          details: { username: username.trim(), error: data.error },
+        });
         setError(data.error || 'Nieprawidłowy login lub hasło.');
         return false;
       }
@@ -113,6 +116,13 @@ export function useAuthInternal() {
 
       persistLoggedUser(payload);
       setUser(payload);
+      logEvent({
+        level: 'info',
+        category: 'auth',
+        action: 'auth.login.success',
+        message: `Logowanie (lokalne): ${payload.username}`,
+        details: { role: payload.role },
+      });
       return true;
     }
 
@@ -132,19 +142,45 @@ export function useAuthInternal() {
 
       persistLoggedUser(payload);
       setUser(payload);
+      logEvent({
+        level: 'info',
+        category: 'auth',
+        action: 'auth.login.success',
+        message: `Logowanie kontem: ${payload.username}`,
+        details: {
+          role: payload.role,
+          accessAccountId: payload.accessAccountId,
+          accountName: accessMatch.account.name,
+        },
+      });
       return true;
     }
 
+    logEvent({
+      level: 'warn',
+      category: 'auth',
+      action: 'auth.login.failed',
+      message: 'Nieudane logowanie',
+      details: { username: username.trim() },
+    });
     setError('Nieprawidłowy login lub hasło.');
     return false;
   }, []);
 
   const logout = useCallback(() => {
+    if (user?.username) {
+      logEvent({
+        level: 'info',
+        category: 'auth',
+        action: 'auth.logout',
+        message: `Wylogowanie: ${user.username}`,
+      });
+    }
     if (typeof window !== 'undefined') {
       window.localStorage.removeItem(STORAGE_KEY);
     }
     setUser(null);
-  }, []);
+  }, [user]);
 
   return {
     user,

@@ -61,12 +61,17 @@ export function SyncStatusPanel({ syncInfo }) {
     bufferCount,
     bufferFetchedAtLabel,
     bufferHasData,
+    serverCount,
+    serverHasData,
+    serverFetchedAtLabel,
+    serverSyncError,
     bulkDownloading,
     bulkProgress,
   } = syncInfo;
 
   const savedEmpty = savedCount === 0 && !savedLocally;
   const bufferEmpty = bufferCount === 0;
+  const serverEmpty = serverCount === 0;
 
   return (
     <div className="rounded-3xl border border-slate-200 bg-white p-4 space-y-3 min-w-0 overflow-hidden">
@@ -75,8 +80,8 @@ export function SyncStatusPanel({ syncInfo }) {
       </h2>
 
       <SyncSection title="Połączenie" accent="slate">
-        <SyncStatRow label="Konto dostępu" value={syncInfo.accessAccountLabel || '—'} />
-        <SyncStatRow label="Konto" value={accountDisplay} />
+        <SyncStatRow label="Konto" value={syncInfo.accessAccountLabel || '—'} />
+        <SyncStatRow label="Sellasist" value={accountDisplay} />
         <SyncStatRow
           label="Tryb"
           value={isDemoMode ? 'Demo (dane OpenAPI)' : 'Produkcja (API Sellasist)'}
@@ -86,12 +91,19 @@ export function SyncStatusPanel({ syncInfo }) {
 
       <SyncSection title="Aktywny widok listy" accent="slate">
         <div className="flex flex-wrap gap-1.5">
+          <StatusPill active={activeSource === 'server'} label="Baza serwerowa" tone="emerald" />
           <StatusPill active={activeSource === 'saved'} label="Baza lokalna" tone="emerald" />
           <StatusPill active={activeSource === 'buffer'} label="Bufor sesji" tone="sky" />
         </div>
         <SyncStatRow
           label="Wyświetlane źródło"
-          value={activeSource === 'saved' ? 'Baza lokalna' : 'Bufor pobierania'}
+          value={
+            activeSource === 'server'
+              ? 'Baza danych (serwer)'
+              : activeSource === 'saved'
+                ? 'Baza lokalna'
+                : 'Bufor pobierania'
+          }
           valueClassName="text-brand-primary"
         />
         <SyncStatRow label="Zamówienia na liście" value={visibleFiltered} />
@@ -118,6 +130,35 @@ export function SyncStatusPanel({ syncInfo }) {
           </div>
         </SyncSection>
       )}
+
+      <SyncSection title="Baza danych (serwer Netlify)" accent="emerald">
+        <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 min-w-0">
+          <span className="text-xs text-slate-500 shrink-0">Status zapisu</span>
+          <span
+            className={`inline-flex items-center max-w-full rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider border text-center [overflow-wrap:anywhere] ${
+              serverHasData
+                ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                : 'bg-slate-100 text-slate-500 border-slate-200'
+            }`}
+          >
+            {serverHasData ? 'Zapisane' : serverEmpty ? 'Pusta' : 'Brak danych'}
+          </span>
+        </div>
+        <SyncStatRow label="Zamówienia na serwerze" value={serverCount} />
+        <SyncStatRow
+          label="Ostatni zapis"
+          value={serverHasData ? serverFetchedAtLabel : '—'}
+        />
+        {serverSyncError && (
+          <p className="text-[10px] text-red-600 bg-red-50 border border-red-100 rounded-xl px-2 py-1.5">
+            {serverSyncError}
+          </p>
+        )}
+        <p className="text-[10px] text-slate-400 leading-relaxed pt-0.5">
+          Trwałe dane w Netlify Database. Zapisz po imporcie („Zapisz na serwerze”) lub przez
+          „Zarządzaj zamówieniami”.
+        </p>
+      </SyncSection>
 
       <SyncSection title="Baza lokalna (localStorage)" accent="emerald">
         <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 min-w-0">
@@ -170,11 +211,11 @@ export function SyncStatusPanel({ syncInfo }) {
       <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 px-3 py-2.5 space-y-1">
         <SyncStatRow
           label="Razem w aplikacji"
-          value={`${savedCount + bufferCount} zamówień`}
+          value={`${savedCount + bufferCount + serverCount} zamówień`}
           valueClassName="font-semibold"
         />
         <p className="text-[10px] text-slate-400">
-          Baza ({savedCount}) + bufor ({bufferCount}) — to osobne kopie, mogą się różnić.
+          Serwer ({serverCount}) + lokalna ({savedCount}) + bufor ({bufferCount}) — to osobne kopie.
         </p>
       </div>
     </div>

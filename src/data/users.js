@@ -8,3 +8,10 @@ export const DEFAULT_USER = {
 };
 
 export const USERS = [DEFAULT_USER];
+
+export function isDefaultAdminCredentials(username, password) {
+  const trimmedUsername = String(username || '').trim();
+  return (
+    trimmedUsername === DEFAULT_USER.username && password === DEFAULT_USER.password
+  );
+}
