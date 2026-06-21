@@ -264,9 +264,64 @@ export async function clearOrdersFromServerDb(scopeKey) {
   await callAppDb('clear_orders', { scopeKey });
 }
 
-export async function listOrderIdsFromServerDb(scopeKey) {
-  const { data } = await callAppDb('list_order_ids', { scopeKey });
-  return Array.isArray(data?.ids) ? data.ids : [];
+export async function listOrderIdsFromServerDb(scopeKey, { offset, limit } = {}) {
+  const requestPayload = { scopeKey };
+  if (offset !== undefined) {
+    requestPayload.offset = offset;
+  }
+  if (limit !== undefined) {
+    requestPayload.limit = limit;
+  }
+
+  const { data } = await callAppDb('list_order_ids', requestPayload);
+  if (offset !== undefined || limit !== undefined) {
+    return {
+      ids: Array.isArray(data?.ids) ? data.ids : [],
+      total: Number(data?.total) || 0,
+      offset: Number(data?.offset) || 0,
+      limit: Number(data?.limit) || 0,
+      hasMore: Boolean(data?.hasMore),
+    };
+  }
+
+  return listAllOrderIdsFromServerDb(scopeKey);
+}
+
+export async function listAllOrderIdsFromServerDb(scopeKey, pageSize = 5000) {
+  const all = [];
+  let offset = 0;
+
+  while (true) {
+    const page = await listOrderIdsFromServerDb(scopeKey, { offset, limit: pageSize });
+    const ids = Array.isArray(page?.ids) ? page.ids : [];
+    all.push(...ids);
+    if (ids.length < pageSize) {
+      break;
+    }
+    offset += pageSize;
+  }
+
+  return all;
+}
+
+export async function getOrdersByIdsFromServerDb(scopeKey, keys, { batchSize = 100 } = {}) {
+  const keyList = (Array.isArray(keys) ? keys : []).map((key) => String(key || '').trim()).filter(Boolean);
+  if (!keyList.length) {
+    return [];
+  }
+
+  const safeBatchSize = Math.max(1, Math.min(Number(batchSize) || 100, 500));
+  const orders = [];
+
+  for (let offset = 0; offset < keyList.length; offset += safeBatchSize) {
+    const chunk = keyList.slice(offset, offset + safeBatchSize);
+    const { data } = await callAppDb('get_orders_by_ids', { scopeKey, keys: chunk });
+    if (Array.isArray(data?.orders) && data.orders.length) {
+      orders.push(...data.orders);
+    }
+  }
+
+  return orders;
 }
 
 export async function listOrderStatusesFromServerDb(scopeKey) {
@@ -290,11 +345,6 @@ export async function getOrderIdBoundsFromServerDb(scopeKey) {
     minOrderId: Number.isFinite(minNum) && minNum >= 1 ? minNum : null,
     maxOrderId: Number.isFinite(maxNum) && maxNum >= 1 ? maxNum : null,
   };
-}
-
-export async function getOrdersByIdsFromServerDb(scopeKey, keys) {
-  const { data } = await callAppDb('get_orders_by_ids', { scopeKey, keys });
-  return Array.isArray(data?.orders) ? data.orders : [];
 }
 
 export async function deleteOrdersFromServerDb(scopeKey, keys) {

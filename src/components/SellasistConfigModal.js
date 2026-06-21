@@ -51,7 +51,7 @@ export function SellasistConfigModal({ open, onClose }) {
       <div
         role="dialog"
         aria-modal="true"
-        className="relative w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white border border-slate-200 shadow-2xl"
+        className="relative w-full max-w-6xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white border border-slate-200 shadow-2xl"
       >
         <div className="sticky top-0 z-10 flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-100 bg-white/95 backdrop-blur-sm">
           <div>

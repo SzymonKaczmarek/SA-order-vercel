@@ -11,6 +11,7 @@ const {
   clearOrders,
   deleteOrdersByKeys,
   getOrderIds,
+  getOrderIdsCount,
   getOrdersByIds,
   listOrderStatusLabels,
   getMaxOrderId,
@@ -111,10 +112,29 @@ module.exports = async function handler(req, res) {
         return jsonResponse(res, 400, { error: 'Brak scopeKey' });
       }
 
+      const hasPaging = body.offset !== undefined || body.limit !== undefined;
+      if (hasPaging) {
+        const offset = Math.max(0, Number(body.offset) || 0);
+        const limit = Math.max(1, Math.min(Number(body.limit) || 5000, 10000));
+        const ids = await getOrderIds(scopeKey, { offset, limit });
+        const total = await getOrderIdsCount(scopeKey);
+        return jsonResponse(res, 200, {
+          ok: true,
+          data: {
+            ids,
+            total,
+            offset,
+            limit,
+            hasMore: offset + ids.length < total,
+          },
+        });
+      }
+
+      const total = await getOrderIdsCount(scopeKey);
       const ids = await getOrderIds(scopeKey);
       return jsonResponse(res, 200, {
         ok: true,
-        data: { ids, total: ids.length },
+        data: { ids, total: total || ids.length },
       });
     }
 

@@ -1,8 +1,11 @@
 /** Mniejsze paczki = szybsza odpowiedź funkcji Netlify (limit ~10 s na darmowym planie). */
 import { resolveContinueFromStored } from './storedOrderBounds';
+import {
+  DEFAULT_IMPORT_MAX_REQUESTS_PER_MINUTE,
+  DEFAULT_IMPORT_PAGE_SIZE,
+  getImportLimitsFromConfig,
+} from './sellasistImportLimits';
 
-const PAGE_SIZE = 50;
-const MAX_REQUESTS_PER_MINUTE = 150;
 const MINUTE_MS = 60_000;
 const MAX_FETCH_RETRIES = 3;
 
@@ -70,8 +73,8 @@ function formatEta(seconds) {
   return sec > 0 ? `~${min} min ${sec} s` : `~${min} min`;
 }
 
-export const BULK_PAGE_SIZE = PAGE_SIZE;
-export const BULK_MAX_REQUESTS_PER_MINUTE = MAX_REQUESTS_PER_MINUTE;
+export const BULK_PAGE_SIZE = DEFAULT_IMPORT_PAGE_SIZE;
+export const BULK_MAX_REQUESTS_PER_MINUTE = DEFAULT_IMPORT_MAX_REQUESTS_PER_MINUTE;
 
 function getOrderNumericId(order) {
   const raw = order?.id ?? order?.order_id;
@@ -198,7 +201,7 @@ export function formatDownloadScopeSummary(downloadScope) {
   return '—';
 }
 
-function buildFetchParams(offset, idRange, limit = PAGE_SIZE) {
+function buildFetchParams(offset, idRange, limit = DEFAULT_IMPORT_PAGE_SIZE) {
   const params = { limit, offset };
 
   if (idRange?.from) {
@@ -222,15 +225,19 @@ function shouldStopAfterBatch(rawBatch, idRange) {
 export async function downloadAllOrders(
   config,
   fetchPage,
-  { onProgress, onBatch, signal, downloadScope, resumeFrom = null }
+  { onProgress, onBatch, signal, downloadScope, resumeFrom = null, importLimits = null }
 ) {
+  const limits = importLimits || getImportLimitsFromConfig(config);
+  const pageSize = limits.pageSize;
+  const maxRequestsPerMinute = limits.maxRequestsPerMinute;
+
   const idRange =
     downloadScope?.type === 'idRange' || downloadScope?.type === 'continueFromStored'
       ? downloadScope.idRange
       : null;
   const latestCount = downloadScope?.type === 'latest' ? downloadScope.latestCount : null;
 
-  const limiter = new RequestRateLimiter(MAX_REQUESTS_PER_MINUTE);
+  const limiter = new RequestRateLimiter(maxRequestsPerMinute);
   let offset = resumeFrom?.offset ?? 0;
   let packageNum = resumeFrom?.packageNum ?? 0;
   let fetchedTotal = resumeFrom?.fetchedTotal ?? 0;
@@ -259,7 +266,7 @@ export async function downloadAllOrders(
     packageNum += 1;
 
     const pageLimit =
-      latestCount != null ? Math.min(PAGE_SIZE, latestCount - fetchedTotal) : PAGE_SIZE;
+      latestCount != null ? Math.min(pageSize, latestCount - fetchedTotal) : pageSize;
 
     const data = await fetchPageWithRetry(
       () => fetchPage(buildFetchParams(offset, idRange, pageLimit)),
@@ -278,7 +285,7 @@ export async function downloadAllOrders(
     lastMeta = data.meta ?? lastMeta;
     lastRaw = data.raw ?? lastRaw;
 
-    if (data.demo && rawBatch.length >= PAGE_SIZE) {
+    if (data.demo && rawBatch.length >= pageSize) {
       await sleep(500);
     }
 
@@ -289,9 +296,9 @@ export async function downloadAllOrders(
     if (latestCount != null) {
       hasMore = fetchedTotal < latestCount && rawBatch.length >= pageLimit;
     } else if (idRange) {
-      hasMore = rawBatch.length >= PAGE_SIZE && !shouldStopAfterBatch(rawBatch, idRange);
+      hasMore = rawBatch.length >= pageSize && !shouldStopAfterBatch(rawBatch, idRange);
     } else {
-      hasMore = rawBatch.length >= PAGE_SIZE;
+      hasMore = rawBatch.length >= pageSize;
     }
 
     const elapsedSec = Math.max(1, (Date.now() - startTime) / 1000);
@@ -301,7 +308,7 @@ export async function downloadAllOrders(
       totalKnown != null ? Math.max(0, totalKnown - fetchedTotal) : null;
     const remainingPackagesCount =
       remainingOrdersCount != null
-        ? Math.ceil(remainingOrdersCount / PAGE_SIZE)
+        ? Math.ceil(remainingOrdersCount / pageSize)
         : hasMore
           ? null
           : 0;
@@ -337,12 +344,14 @@ export async function downloadAllOrders(
         remainingOrdersCount != null
           ? String(remainingOrdersCount)
           : hasMore
-            ? `≥ ${PAGE_SIZE}`
+            ? `≥ ${pageSize}`
             : '0',
       etaSeconds,
       etaLabel: hasMore ? formatEta(etaSeconds) : 'Zakończono',
       progressPercent,
       requestsThisMinute: limiter.timestamps.length,
+      importPageSize: pageSize,
+      importMaxRequestsPerMinute: maxRequestsPerMinute,
       status: hasMore ? 'downloading' : 'complete',
     });
 
@@ -355,7 +364,7 @@ export async function downloadAllOrders(
     });
 
     if (!hasMore) break;
-    offset += PAGE_SIZE;
+    offset += pageSize;
   }
 
   return {

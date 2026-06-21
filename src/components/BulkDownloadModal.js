@@ -12,6 +12,8 @@ import {
   getBulkImportHeadline,
   getBulkImportProgressRows,
 } from '../utils/bulkImportProgressDisplay';
+import { useSellasistConfig } from '../hooks/useSellasistConfig';
+import { getImportLimitsFromConfig } from '../utils/sellasistImportLimits';
 
 const IMPORT_DESTINATIONS = [
   {
@@ -69,6 +71,8 @@ export function BulkDownloadModal({
   onDiscardResume,
   onClose,
 }) {
+  const { config } = useSellasistConfig();
+  const importLimits = getImportLimitsFromConfig(config);
   const [scope, setScope] = useState('all');
   const [destination, setDestination] = useState('local');
   const [idFrom, setIdFrom] = useState('');
@@ -140,7 +144,7 @@ export function BulkDownloadModal({
       <div
         role="dialog"
         aria-modal="true"
-        className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-3xl bg-white border border-slate-200 shadow-2xl"
+        className="relative w-full max-w-6xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white border border-slate-200 shadow-2xl"
       >
         <div className="px-6 py-5 border-b border-slate-100 sticky top-0 bg-white z-10">
           <h2 className="text-lg font-semibold text-slate-900">Pobieranie z Sellasist</h2>
@@ -196,36 +200,37 @@ export function BulkDownloadModal({
                 </div>
               )}
 
-              <div className="space-y-2">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  Gdzie zapisać pobrane zamówienia
-                </p>
-                {IMPORT_DESTINATIONS.map((item) => (
-                  <label
-                    key={item.id}
-                    className="flex items-start gap-3 rounded-2xl border border-slate-200 p-4 cursor-pointer has-[:checked]:border-brand-primary has-[:checked]:ring-2 has-[:checked]:ring-brand-primary/15"
-                  >
-                    <input
-                      type="radio"
-                      name="import-destination"
-                      checked={destination === item.id}
-                      onChange={() => setDestination(item.id)}
-                      className="mt-0.5"
-                    />
-                    <span>
-                      <span className="block text-sm font-semibold text-slate-900">{item.label}</span>
-                      <span className="block text-xs text-slate-500 mt-0.5">{item.desc}</span>
-                    </span>
-                  </label>
-                ))}
-              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-2 min-w-0">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Gdzie zapisać pobrane zamówienia
+                  </p>
+                  {IMPORT_DESTINATIONS.map((item) => (
+                    <label
+                      key={item.id}
+                      className="flex items-start gap-3 rounded-2xl border border-slate-200 p-4 cursor-pointer has-[:checked]:border-brand-primary has-[:checked]:ring-2 has-[:checked]:ring-brand-primary/15"
+                    >
+                      <input
+                        type="radio"
+                        name="import-destination"
+                        checked={destination === item.id}
+                        onChange={() => setDestination(item.id)}
+                        className="mt-0.5"
+                      />
+                      <span>
+                        <span className="block text-sm font-semibold text-slate-900">{item.label}</span>
+                        <span className="block text-xs text-slate-500 mt-0.5">{item.desc}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
 
-              <div className="space-y-2">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  Zakres pobierania
-                </p>
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-2 min-w-0">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Zakres pobierania
+                  </p>
 
-                <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 cursor-pointer has-[:checked]:border-brand-primary has-[:checked]:ring-2 has-[:checked]:ring-brand-primary/15">
+                  <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 cursor-pointer has-[:checked]:border-brand-primary has-[:checked]:ring-2 has-[:checked]:ring-brand-primary/15">
                   <input
                     type="radio"
                     name="download-scope"
@@ -401,6 +406,7 @@ export function BulkDownloadModal({
                     )}
                   </span>
                 </label>
+                </div>
               </div>
 
               {setupError && (
@@ -460,7 +466,7 @@ export function BulkDownloadModal({
               </div>
 
               <div className="rounded-2xl bg-slate-50 border border-slate-100 p-4 space-y-3">
-                {getBulkImportProgressRows(progress).map((row) => (
+                {getBulkImportProgressRows(progress, config).map((row) => (
                   <StatRow
                     key={row.id}
                     label={row.label}
@@ -471,8 +477,10 @@ export function BulkDownloadModal({
               </div>
 
               <p className="text-[11px] text-slate-500 leading-relaxed rounded-xl border border-amber-100 bg-amber-50/80 px-3 py-2">
-                Limit bezpieczeństwa: maks. <strong>150 żądań API / minutę</strong> (limit
-                Sellasist: 300/min). Przy dużym imporcie import może trwać dłużej.
+                Limit bezpieczeństwa: maks.{' '}
+                <strong>{importLimits.maxRequestsPerMinute} żądań API / minutę</strong> (limit
+                Sellasist: 300/min). Paczka: <strong>{importLimits.pageSize} zamówień</strong>.
+                Wartości z Konfiguracji Sellasist.
               </p>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

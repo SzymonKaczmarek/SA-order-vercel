@@ -71,7 +71,34 @@ export async function computeServerLoadDiff({
   }
 
   report(28, 'Pobieranie listy ID z bazy danych…');
-  const serverIds = await listOrderIdsFromServerDb(resolvedScopeKey);
+  const serverIds = [];
+  let serverOffset = 0;
+  const serverPageSize = 5000;
+
+  while (true) {
+    if (isCancelled()) {
+      return null;
+    }
+
+    const page = await listOrderIdsFromServerDb(resolvedScopeKey, {
+      offset: serverOffset,
+      limit: serverPageSize,
+    });
+    const ids = Array.isArray(page?.ids) ? page.ids : [];
+    serverIds.push(...ids);
+
+    if (ids.length < serverPageSize) {
+      break;
+    }
+
+    serverOffset += serverPageSize;
+    report(
+      28 + Math.min(20, Math.round((serverIds.length / Math.max(serverIds.length + serverPageSize, 1)) * 20)),
+      `Pobieranie listy ID z bazy… ${serverIds.length}`
+    );
+    await yieldToUi();
+  }
+
   if (isCancelled()) {
     return null;
   }

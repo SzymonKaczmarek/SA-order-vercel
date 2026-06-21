@@ -142,19 +142,24 @@ export function OrdersManageModal({ open, onClose, syncSummary, summaryLoading, 
     };
 
     try {
-      if (!actionDisabled && selectedMeta.handler) {
+      const wantsClearLocal = clearLocal && !actions.clearLocalDisabled;
+      const wantsClearServer = clearServer && !actions.clearServerDisabled;
+      const wantsAnyClear = wantsClearLocal || wantsClearServer;
+      const wantsSync = !actionDisabled && selectedMeta.handler && !wantsAnyClear;
+
+      if (wantsSync) {
         const handler = actions[selectedMeta.handler];
         if (typeof handler === 'function') {
           await Promise.resolve(handler(onProgress));
         }
       }
 
-      if (clearLocal && !actions.clearLocalDisabled) {
+      if (wantsClearLocal) {
         onProgress('Czyszczenie bufora lokalnego…');
         await Promise.resolve(actions.clearLocal());
       }
 
-      if (clearServer && !actions.clearServerDisabled) {
+      if (wantsClearServer) {
         onProgress('Czyszczenie bazy danych…');
         await Promise.resolve(actions.clearServer());
       }
@@ -291,7 +296,8 @@ export function OrdersManageModal({ open, onClose, syncSummary, summaryLoading, 
           <div className="text-[11px] text-slate-500">
             <span className="inline-flex items-center gap-1">
               <IconTrash className="w-3.5 h-3.5" />
-              Czyszczenie można łączyć z synchronizacją w jednym kroku.
+              Zaznaczone czyszczenie wykonuje się bez synchronizacji. Aby najpierw ujednolicić dane,
+              uruchom synchronizację osobno.
             </span>
           </div>
         </div>

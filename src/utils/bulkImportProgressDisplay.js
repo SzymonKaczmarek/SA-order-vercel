@@ -1,7 +1,30 @@
-import { BULK_MAX_REQUESTS_PER_MINUTE, BULK_PAGE_SIZE } from './bulkOrderDownload';
+import {
+  DEFAULT_IMPORT_MAX_REQUESTS_PER_MINUTE,
+  DEFAULT_IMPORT_PAGE_SIZE,
+  getImportLimitsFromConfig,
+} from './sellasistImportLimits';
 
 function formatCount(value) {
   return new Intl.NumberFormat('pl-PL').format(Number(value) || 0);
+}
+
+function resolveImportLimits(progress = {}, limits = null) {
+  if (limits?.pageSize && limits?.maxRequestsPerMinute) {
+    return limits;
+  }
+
+  const fromConfig = limits ? getImportLimitsFromConfig(limits) : null;
+
+  return {
+    pageSize:
+      Number(progress.importPageSize) ||
+      fromConfig?.pageSize ||
+      DEFAULT_IMPORT_PAGE_SIZE,
+    maxRequestsPerMinute:
+      Number(progress.importMaxRequestsPerMinute) ||
+      fromConfig?.maxRequestsPerMinute ||
+      DEFAULT_IMPORT_MAX_REQUESTS_PER_MINUTE,
+  };
 }
 
 function formatEtaDetail(progress, etaSeconds) {
@@ -44,7 +67,7 @@ function formatEtaValue(seconds) {
   return `ok. ${min} ${minLabel} ${sec} ${secLabel}`;
 }
 
-function resolveRemainingPackages(progress) {
+function resolveRemainingPackages(progress, pageSize) {
   const hasMore = progress.hasMore !== false;
   const totalKnown = progress.totalKnown != null ? Number(progress.totalKnown) : null;
   const fetchedTotal = Number(progress.fetchedTotal) || 0;
@@ -55,10 +78,10 @@ function resolveRemainingPackages(progress) {
 
   if (totalKnown != null && totalKnown > 0) {
     const remainingOrders = Math.max(0, totalKnown - fetchedTotal);
-    const remainingPackages = Math.ceil(remainingOrders / BULK_PAGE_SIZE);
+    const remainingPackages = Math.ceil(remainingOrders / pageSize);
     return {
       value: formatCount(remainingPackages),
-      detail: `Po ${BULK_PAGE_SIZE} zamówień na paczkę · zostało ok. ${formatCount(remainingOrders)} zamówień`,
+      detail: `Po ${pageSize} zamówień na paczkę · zostało ok. ${formatCount(remainingOrders)} zamówień`,
     };
   }
 
@@ -69,7 +92,7 @@ function resolveRemainingPackages(progress) {
   };
 }
 
-function resolveRemainingOrders(progress) {
+function resolveRemainingOrders(progress, pageSize) {
   const hasMore = progress.hasMore !== false;
   const totalKnown = progress.totalKnown != null ? Number(progress.totalKnown) : null;
   const fetchedTotal = Number(progress.fetchedTotal) || 0;
@@ -87,10 +110,10 @@ function resolveRemainingOrders(progress) {
     };
   }
 
-  const nextHint = lastBatchSize > 0 ? lastBatchSize : BULK_PAGE_SIZE;
+  const nextHint = lastBatchSize > 0 ? lastBatchSize : pageSize;
   return {
     value: `co najmniej ${formatCount(nextHint)}`,
-    detail: 'Pełna liczba nieznana — w kolejnej paczce może być do 50 zamówień',
+    detail: `Pełna liczba nieznana — w kolejnej paczce może być do ${pageSize} zamówień`,
   };
 }
 
@@ -135,9 +158,9 @@ function resolveProgress(progress) {
   };
 }
 
-function resolveApiUsage(progress) {
+function resolveApiUsage(progress, maxRequestsPerMinute) {
   const used = Number(progress.requestsThisMinute) || 0;
-  const limit = BULK_MAX_REQUESTS_PER_MINUTE;
+  const limit = maxRequestsPerMinute;
   const percent = Math.min(100, Math.round((used / limit) * 100));
 
   let loadHint = 'Niskie obciążenie';
@@ -154,7 +177,8 @@ function resolveApiUsage(progress) {
 }
 
 /** Czytelne wiersze statystyk importu z Sellasist (modal + panel synchronizacji). */
-export function getBulkImportProgressRows(progress = {}) {
+export function getBulkImportProgressRows(progress = {}, limits = null) {
+  const { pageSize, maxRequestsPerMinute } = resolveImportLimits(progress, limits);
   const packageNum = Number(progress.packageNum) || 0;
   const lastBatchSize = Number(progress.lastBatchSize) || 0;
 
@@ -170,18 +194,18 @@ export function getBulkImportProgressRows(progress = {}) {
       value: `#${formatCount(packageNum)}`,
       detail:
         lastBatchSize > 0
-          ? `${formatCount(lastBatchSize)} zamówień w tej paczce (maks. ${BULK_PAGE_SIZE} na żądanie)`
+          ? `${formatCount(lastBatchSize)} zamówień w tej paczce (maks. ${pageSize} na żądanie)`
           : 'Oczekiwanie na odpowiedź API…',
     },
     {
       id: 'remaining-packages',
       label: 'Pozostałe paczki',
-      ...resolveRemainingPackages(progress),
+      ...resolveRemainingPackages(progress, pageSize),
     },
     {
       id: 'remaining-orders',
       label: 'Pozostałe zamówienia',
-      ...resolveRemainingOrders(progress),
+      ...resolveRemainingOrders(progress, pageSize),
     },
     {
       id: 'eta',
@@ -191,7 +215,7 @@ export function getBulkImportProgressRows(progress = {}) {
     {
       id: 'api-usage',
       label: 'Obciążenie API',
-      ...resolveApiUsage(progress),
+      ...resolveApiUsage(progress, maxRequestsPerMinute),
     },
   ];
 }

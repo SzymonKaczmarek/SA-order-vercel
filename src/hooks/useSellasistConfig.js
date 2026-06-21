@@ -2,6 +2,11 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAccessAccount } from '../context/AccessAccountContext';
 import { getSellasistConfigFromDb, setSellasistConfigToDb } from './useAppDbApi';
 import { logEvent } from '../utils/eventLog';
+import {
+  DEFAULT_IMPORT_MAX_REQUESTS_PER_MINUTE,
+  DEFAULT_IMPORT_PAGE_SIZE,
+  normalizeImportLimits,
+} from '../utils/sellasistImportLimits';
 
 const LEGACY_CONFIG_KEY = 'saor_sellasist_config';
 
@@ -9,6 +14,8 @@ const DEFAULT_CONFIG = {
   account: '',
   apiKey: '',
   useDemoData: false,
+  importPageSize: DEFAULT_IMPORT_PAGE_SIZE,
+  importMaxRequestsPerMinute: DEFAULT_IMPORT_MAX_REQUESTS_PER_MINUTE,
 };
 
 function safeParse(raw, fallback) {
@@ -29,6 +36,7 @@ function normalizeConfig(raw) {
     account: String(raw.account || '').trim(),
     apiKey: String(raw.apiKey || '').trim(),
     useDemoData: Boolean(raw.useDemoData),
+    ...normalizeImportLimits(raw),
   };
 }
 
@@ -148,6 +156,8 @@ export function writeSellasistConfig(accessAccountId, _config) {
   clearLegacyLocalConfig(accessAccountId);
 }
 
+export { getImportLimitsFromConfig } from '../utils/sellasistImportLimits';
+
 export function isDemoMode(config) {
   return Boolean(config?.useDemoData);
 }
@@ -228,6 +238,8 @@ export function useSellasistConfig() {
             accessAccountId: activeAccountId,
             account: payload.account,
             useDemoData: payload.useDemoData,
+            importPageSize: payload.importPageSize,
+            importMaxRequestsPerMinute: payload.importMaxRequestsPerMinute,
             apiKey: payload.apiKey ? '[ukryte]' : '',
             storage: 'server_db',
           },

@@ -54,6 +54,12 @@ import { DEFAULT_ORDER_SORT, normalizeOrderSort } from '../utils/sortOrders';
 import { downloadOrdersCsv, getOrdersExportFilename } from '../utils/exportOrdersCsv';
 import { logEvent } from '../utils/eventLog';
 import {
+  compareLocalAndServerOrderIds,
+  listMissingInLocal,
+  listMissingInServer,
+  loadAllServerOrderIds,
+} from '../utils/orderIdSyncCompare';
+import {
   EMPTY_FILTERS,
   filterOrders,
   mergeStatusFilterOptions,
@@ -432,22 +438,19 @@ function OrdersView() {
       let matchedCount = 0;
 
       try {
-        const serverIds = await listOrderIdsFromServerDb(scopeKey);
+        const diff = await compareLocalAndServerOrderIds({
+          scopeKey,
+          listLocalOrderIds,
+          listOrderIdsPage: listOrderIdsFromServerDb,
+        });
         if (requestId !== serverDbHintRequestIdRef.current) {
           return;
         }
 
-        const localIds = await listLocalOrderIds(scopeKey);
-        if (requestId !== serverDbHintRequestIdRef.current) {
-          return;
-        }
-
-        localCount = localIds.length;
-        const localKeys = new Set(localIds);
-        const serverKeys = new Set(serverIds);
-        missingInLocal = serverIds.filter((id) => !localKeys.has(id)).length;
-        missingInServer = localIds.filter((id) => !serverKeys.has(id)).length;
-        matchedCount = serverIds.filter((id) => localKeys.has(id)).length;
+        localCount = diff.localCount;
+        missingInLocal = diff.missingInLocal;
+        missingInServer = diff.missingInServer;
+        matchedCount = diff.matchedCount;
       } catch (_e) {
         localCount = localOrdersTotal;
         missingInLocal = 0;
@@ -664,26 +667,39 @@ function OrdersView() {
       }
 
       onProgress?.('Porównywanie bufora z bazą danych…');
-      const serverIds = await listOrderIdsFromServerDb(scopeKey);
       const localIds = await listLocalOrderIds(scopeKey);
-      const localKeys = new Set(localIds);
-      const missingKeys = serverIds.filter((id) => !localKeys.has(id));
+      const serverKeys = await loadAllServerOrderIds(listOrderIdsFromServerDb, scopeKey);
+      const missingKeys = listMissingInLocal(localIds, serverKeys);
 
       if (missingKeys.length === 0) {
         return { added: 0 };
       }
 
-      onProgress?.(`Pobieranie ${missingKeys.length} brakujących produktów…`);
-      const missing = await getOrdersByIdsFromServerDb(scopeKey, missingKeys);
-      if (missing.length === 0) {
+      const batchSize = 100;
+      let added = 0;
+
+      for (let offset = 0; offset < missingKeys.length; offset += batchSize) {
+        const chunk = missingKeys.slice(offset, offset + batchSize);
+        onProgress?.(
+          `Pobieranie brakujących z bazy… ${Math.min(offset + chunk.length, missingKeys.length)} / ${missingKeys.length}`
+        );
+        const batch = await getOrdersByIdsFromServerDb(scopeKey, chunk);
+        if (!batch.length) {
+          continue;
+        }
+
+        onProgress?.(`Dopisywanie do bufora… ${Math.min(offset + batch.length, missingKeys.length)} / ${missingKeys.length}`);
+        await appendLocalBatch(batch, { fetchedAt: new Date().toISOString() });
+        added += batch.length;
+      }
+
+      if (added === 0) {
         throw new Error('Nie udało się pobrać brakujących produktów z bazy danych.');
       }
 
-      onProgress?.(`Dopisywanie ${missing.length} produktów do bufora…`);
-      await appendLocalBatch(missing, { fetchedAt: new Date().toISOString() });
       await loadLocalOrdersPage(1, ordersPageSize, scopeKey);
       await refreshServerDbHint();
-      return { added: missing.length };
+      return { added };
     },
     [
       appendLocalBatch,
@@ -708,10 +724,9 @@ function OrdersView() {
       }
 
       onProgress?.('Porównywanie bazy z buforem lokalnym…');
-      const serverIds = await listOrderIdsFromServerDb(serverScopeKey);
       const localIds = await listLocalOrderIds(localScopeKey);
-      const serverKeys = new Set(serverIds);
-      const missingKeys = localIds.filter((id) => !serverKeys.has(id));
+      const serverKeys = await loadAllServerOrderIds(listOrderIdsFromServerDb, serverScopeKey);
+      const missingKeys = listMissingInServer(localIds, serverKeys);
 
       if (missingKeys.length === 0) {
         return { added: 0 };
@@ -852,24 +867,51 @@ function OrdersView() {
   const moveServerToLocal = useCallback(async (onProgress) => {
     if (serverOrdersTotal === 0 || !activeAccountId) return;
 
-    onProgress?.('Pobieranie danych z bazy…');
     const scopeKey = getServerScopeKey();
-    const full = await getOrdersFromServerDb(scopeKey);
-    const allOrders = Array.isArray(full?.orders) ? full.orders : [];
-    if (allOrders.length === 0) return;
+    const pageSize = 100;
+    let offset = 0;
+    let total = serverOrdersTotal;
+    let imported = 0;
+    let firstBatch = true;
+    let sharedMeta = apiMeta;
+    let sharedRaw = apiRaw;
 
-    await appendLocalBatch(allOrders, {
-      replace: true,
-      fetchedAt: new Date().toISOString(),
-      meta: full?.meta ?? apiMeta,
-      raw: full?.raw ?? apiRaw,
-    });
-    if (full?.raw) {
-      setApiRaw(full.raw);
+    while (offset < total) {
+      onProgress?.(
+        `Pobieranie z bazy… ${Math.min(offset + pageSize, total)} / ${total}`
+      );
+      const page = await getOrdersFromServerDb(scopeKey, { offset, limit: pageSize });
+      const batch = Array.isArray(page?.orders) ? page.orders : [];
+      total = Number(page?.total) || total;
+
+      if (!batch.length) {
+        break;
+      }
+
+      await appendLocalBatch(batch, {
+        replace: firstBatch,
+        fetchedAt: new Date().toISOString(),
+        meta: page?.meta ?? sharedMeta,
+        raw: page?.raw ?? sharedRaw,
+      });
+      firstBatch = false;
+      imported += batch.length;
+      offset += pageSize;
+
+      if (page?.raw) {
+        sharedRaw = page.raw;
+        setApiRaw(page.raw);
+      }
+      if (page?.meta) {
+        sharedMeta = page.meta;
+        setApiMeta(page.meta);
+      }
     }
-    if (full?.meta) {
-      setApiMeta(full.meta);
+
+    if (imported === 0) {
+      return;
     }
+
     setActiveSource('local');
     await loadLocalOrdersPage(1, ordersPageSize);
     await refreshServerDbHint();
