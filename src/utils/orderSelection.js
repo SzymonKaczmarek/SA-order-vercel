@@ -4,6 +4,17 @@ export function getOrderKey(order) {
   return String(id);
 }
 
+export function findMissingOrders(existing, incoming) {
+  const existingKeys = new Set(
+    (Array.isArray(existing) ? existing : []).map(getOrderKey).filter(Boolean)
+  );
+
+  return (Array.isArray(incoming) ? incoming : []).filter((order) => {
+    const key = getOrderKey(order);
+    return key && !existingKeys.has(key);
+  });
+}
+
 export function mergeOrders(existing, incoming) {
   const map = new Map();
   existing.forEach((order) => {

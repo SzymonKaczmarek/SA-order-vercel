@@ -5,8 +5,9 @@
   "scripts": {
     "develop": "gatsby develop",
     "gatsby:dev": "gatsby develop",
+    "predev:vercel": "node scripts/ensure-local-env.js",
     "dev:vercel": "npx vercel dev --yes",
-    "env:pull": "npx vercel env pull .env.local --yes",
+    "env:pull": "npx vercel env pull .env.local --environment=production --yes && node scripts/print-env-setup.js",
     "db:migrate": "node scripts/db-migrate.js",
     "build": "gatsby build",
     "serve": "gatsby serve",

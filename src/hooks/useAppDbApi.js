@@ -9,6 +9,8 @@ const SKIP_DB_LOG_ACTIONS = new Set([
   'clear_event_logs',
   'resolve_orders_scope',
   'list_orders_scopes',
+  'list_order_ids',
+  'get_orders_by_ids',
 ]);
 
 async function callAppDb(action, payload = {}) {
@@ -157,4 +159,19 @@ export async function setOrdersToServerDb(scopeKey, payload) {
 
 export async function clearOrdersFromServerDb(scopeKey) {
   await callAppDb('clear_orders', { scopeKey });
+}
+
+export async function listOrderIdsFromServerDb(scopeKey) {
+  const { data } = await callAppDb('list_order_ids', { scopeKey });
+  return Array.isArray(data?.ids) ? data.ids : [];
+}
+
+export async function getOrdersByIdsFromServerDb(scopeKey, keys) {
+  const { data } = await callAppDb('get_orders_by_ids', { scopeKey, keys });
+  return Array.isArray(data?.orders) ? data.orders : [];
+}
+
+export async function deleteOrdersFromServerDb(scopeKey, keys) {
+  const { data } = await callAppDb('delete_orders', { scopeKey, keys });
+  return Number(data?.deleted) || 0;
 }

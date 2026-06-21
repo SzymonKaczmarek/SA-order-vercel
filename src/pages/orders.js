@@ -28,7 +28,10 @@ import { getAccessAccountDisplayName } from '../data/accessAccounts';
 import { fetchSellasistOrders } from '../hooks/useSellasistApi';
 import {
   clearOrdersFromServerDb,
+  deleteOrdersFromServerDb,
+  getOrdersByIdsFromServerDb,
   getOrdersFromServerDb,
+  listOrderIdsFromServerDb,
   resolveOrdersScopeFromDb,
   setOrdersToServerDb,
 } from '../hooks/useAppDbApi';
@@ -69,6 +72,12 @@ const HIDDEN_SERVER_LOAD_PROGRESS = {
   itemTo: 0,
   totalItems: 0,
   percent: 0,
+};
+
+const INITIAL_SERVER_LOAD_DIFF = {
+  loading: false,
+  localCount: 0,
+  missingCount: null,
 };
 
 function getConfigHint(config) {
@@ -121,6 +130,7 @@ function OrdersView() {
   const [ordersPageSize, setOrdersPageSize] = useState(25);
   const [serverLoadPhase, setServerLoadPhase] = useState(null);
   const [serverLoadProgress, setServerLoadProgress] = useState(HIDDEN_SERVER_LOAD_PROGRESS);
+  const [serverLoadDiff, setServerLoadDiff] = useState(INITIAL_SERVER_LOAD_DIFF);
 
   const abortRef = useRef(null);
   const resolvedServerScopeKeyRef = useRef(null);
@@ -129,6 +139,7 @@ function OrdersView() {
   const serverLoadAcceptedRef = useRef(false);
   const serverLoadPhaseRef = useRef(null);
   const previousActiveAccountIdRef = useRef(null);
+  const pendingMissingKeysRef = useRef([]);
   const bulkDownloading = bulkModal.phase === 'downloading';
 
   serverLoadPhaseRef.current = serverLoadPhase;
@@ -364,7 +375,7 @@ function OrdersView() {
     }
   }, [activeAccountId, applyResolvedServerMeta, config]);
 
-  const handleConfirmServerLoad = useCallback(async () => {
+  const handleLoadAllFromServer = useCallback(async () => {
     if (!resolvedServerScopeKeyRef.current) {
       const resolved = await probeServerOrders();
       if (!resolved) {
@@ -434,6 +445,21 @@ function OrdersView() {
     [activeAccountId, getServerScopeKey, loadServerOrdersPage, ordersPageSize, persistServerOrders]
   );
 
+  const removeServerOrderKeys = useCallback(
+    async (keys, reloadPage = ordersPage) => {
+      if (!activeAccountId) return;
+
+      const scopeKey = getServerScopeKey();
+      const keyList = Array.isArray(keys) ? keys : [...keys];
+      if (!keyList.length) return;
+
+      await deleteOrdersFromServerDb(scopeKey, keyList);
+      setOrdersPage(reloadPage);
+      await loadServerOrdersPage(reloadPage, ordersPageSize, scopeKey);
+    },
+    [activeAccountId, getServerScopeKey, loadServerOrdersPage, ordersPage, ordersPageSize]
+  );
+
   useEffect(() => {
     if (!accountReady || !configLoaded || !activeAccountId) return;
 
@@ -449,6 +475,8 @@ function OrdersView() {
       setServerOrdersTotal(0);
       setServerOrders([]);
       setServerSyncError('');
+      setServerLoadDiff(INITIAL_SERVER_LOAD_DIFF);
+      pendingMissingKeysRef.current = [];
       setBufferOrders([]);
       setBufferMeta({ fetchedAt: null, fetchedAtLabel: 'Bufor pusty' });
       setSelectedIds([]);
@@ -497,6 +525,54 @@ function OrdersView() {
     isConfigured,
     probeServerOrders,
   ]);
+
+  useEffect(() => {
+    if (serverLoadPhase !== 'confirm') {
+      setServerLoadDiff(INITIAL_SERVER_LOAD_DIFF);
+      pendingMissingKeysRef.current = [];
+      return undefined;
+    }
+
+    const scopeKey = resolvedServerScopeKeyRef.current;
+    if (!scopeKey) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    setServerLoadDiff({
+      loading: true,
+      localCount: savedOrders.length,
+      missingCount: null,
+    });
+
+    (async () => {
+      try {
+        const serverIds = await listOrderIdsFromServerDb(scopeKey);
+        if (cancelled) return;
+
+        const localKeys = new Set(savedOrders.map(getOrderKey).filter(Boolean));
+        const missingKeys = serverIds.filter((id) => !localKeys.has(id));
+        pendingMissingKeysRef.current = missingKeys;
+        setServerLoadDiff({
+          loading: false,
+          localCount: savedOrders.length,
+          missingCount: missingKeys.length,
+        });
+      } catch (_err) {
+        if (cancelled) return;
+        pendingMissingKeysRef.current = [];
+        setServerLoadDiff({
+          loading: false,
+          localCount: savedOrders.length,
+          missingCount: null,
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [savedOrders, serverLoadPhase]);
 
   useEffect(() => {
     if (!serverLoadAcceptedRef.current || activeSource !== 'server') return;
@@ -552,6 +628,99 @@ function OrdersView() {
     },
     [activeAccountId, apiMeta, applySavedCache, config]
   );
+
+  const handleLoadMissingFromServer = useCallback(async () => {
+    if (!resolvedServerScopeKeyRef.current) {
+      const resolved = await probeServerOrders();
+      if (!resolved) {
+        setServerLoadPhase(null);
+        return;
+      }
+    }
+
+    setServerOrdersLoading(true);
+    setServerSyncError('');
+    setServerLoadPhase('loading');
+    setServerLoadProgress({
+      visible: true,
+      label: 'Porównywanie z lokalną bazą…',
+      page: 1,
+      totalPages: 1,
+      itemFrom: 0,
+      itemTo: 0,
+      totalItems: serverKnownTotalRef.current || 0,
+      percent: 20,
+    });
+
+    try {
+      let missingKeys = pendingMissingKeysRef.current;
+      if (!Array.isArray(missingKeys) || missingKeys.length === 0) {
+        const serverIds = await listOrderIdsFromServerDb(resolvedServerScopeKeyRef.current);
+        const localKeys = new Set(savedOrders.map(getOrderKey).filter(Boolean));
+        missingKeys = serverIds.filter((id) => !localKeys.has(id));
+      }
+
+      if (missingKeys.length === 0) {
+        setError('Brak nowych produktów — lokalna baza zawiera już wszystko z Neon.');
+        setServerLoadPhase(null);
+        setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
+        if (savedOrders.length > 0) {
+          setActiveSource('saved');
+        }
+        return;
+      }
+
+      setServerLoadProgress((current) => ({
+        ...current,
+        label: `Pobieranie ${missingKeys.length} brakujących produktów…`,
+        percent: 45,
+      }));
+
+      const missing = await getOrdersByIdsFromServerDb(
+        resolvedServerScopeKeyRef.current,
+        missingKeys
+      );
+
+      if (missing.length === 0) {
+        setError('Nie udało się pobrać brakujących produktów z bazy.');
+        setServerLoadPhase(null);
+        setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
+        return;
+      }
+
+      setServerLoadProgress((current) => ({
+        ...current,
+        label: `Dopisywanie ${missing.length} brakujących produktów…`,
+        percent: 70,
+      }));
+
+      const merged = mergeOrders(savedOrders, missing);
+      updateSavedOrders(merged);
+      pendingMissingKeysRef.current = [];
+      setActiveSource('saved');
+      setServerLoadProgress({
+        visible: true,
+        label: `Dopisano ${missing.length} produktów do lokalnej bazy`,
+        page: 1,
+        totalPages: 1,
+        itemFrom: 1,
+        itemTo: missing.length,
+        totalItems: missing.length,
+        percent: 100,
+      });
+
+      window.setTimeout(() => {
+        setServerLoadPhase(null);
+        setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
+      }, 450);
+    } catch (err) {
+      setServerSyncError(err?.message || 'Nie udało się załadować różnicówki.');
+      setServerLoadPhase(null);
+      setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
+    } finally {
+      setServerOrdersLoading(false);
+    }
+  }, [probeServerOrders, savedOrders, updateSavedOrders]);
 
   const updateServerOrders = useCallback(
     async (nextOrders) => {
@@ -743,7 +912,7 @@ function OrdersView() {
       }
 
       if (activeSource === 'server') {
-        mutateServerOrders((all) => excludeOrdersByKeys(all, keySet), ordersPage).catch(
+        removeServerOrderKeys([...keySet], ordersPage).catch(
           (err) => {
             setServerSyncError(err?.message || 'Nie udało się usunąć zamówień na serwerze.');
           }
@@ -752,7 +921,7 @@ function OrdersView() {
 
       removeFromSelection([...keySet]);
     },
-    [activeSource, mutateServerOrders, ordersPage, removeFromSelection, savedOrders, updateSavedOrders]
+    [activeSource, ordersPage, removeFromSelection, removeServerOrderKeys, savedOrders, updateSavedOrders]
   );
 
   const moveSelectedToSaved = useCallback(() => {
@@ -768,7 +937,7 @@ function OrdersView() {
     }
 
     if (activeSource === 'server') {
-      mutateServerOrders((all) => excludeOrdersByKeys(all, keySet), ordersPage).catch((err) => {
+      removeServerOrderKeys([...keySet], ordersPage).catch((err) => {
         setServerSyncError(err?.message || 'Nie udało się przenieść zamówień.');
       });
     }
@@ -777,9 +946,9 @@ function OrdersView() {
     setActiveSource('saved');
   }, [
     activeSource,
-    mutateServerOrders,
     orders,
     ordersPage,
+    removeServerOrderKeys,
     savedOrders,
     selectedIds,
     updateSavedOrders,
@@ -802,7 +971,7 @@ function OrdersView() {
     }
 
     if (activeSource === 'server') {
-      mutateServerOrders((all) => excludeOrdersByKeys(all, keySet), ordersPage).catch((err) => {
+      removeServerOrderKeys([...keySet], ordersPage).catch((err) => {
         setServerSyncError(err?.message || 'Nie udało się przenieść zamówień.');
       });
     }
@@ -811,9 +980,9 @@ function OrdersView() {
     setActiveSource('buffer');
   }, [
     activeSource,
-    mutateServerOrders,
     orders,
     ordersPage,
+    removeServerOrderKeys,
     savedOrders,
     selectedIds,
     updateSavedOrders,
@@ -1225,6 +1394,9 @@ function OrdersView() {
       <ServerOrdersLoadOverlay
         phase={serverLoadPhase}
         totalItems={serverOrdersTotal}
+        localCount={serverLoadDiff.localCount}
+        missingCount={serverLoadDiff.missingCount}
+        diffLoading={serverLoadDiff.loading}
         label={serverLoadProgress.label}
         page={serverLoadProgress.page}
         totalPages={serverLoadProgress.totalPages}
@@ -1232,7 +1404,8 @@ function OrdersView() {
         itemTo={serverLoadProgress.itemTo}
         percent={serverLoadProgress.percent}
         loading={serverOrdersLoading}
-        onConfirm={handleConfirmServerLoad}
+        onLoadAll={handleLoadAllFromServer}
+        onLoadMissing={handleLoadMissingFromServer}
         onDecline={handleDeclineServerLoad}
       />
 

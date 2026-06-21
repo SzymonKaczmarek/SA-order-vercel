@@ -1,16 +1,16 @@
 const { handleOptions, rejectMethod, jsonResponse } = require('../lib/api');
 const { isDefaultAdminCredentials } = require('../lib/defaultAdmin');
+const { readJson, writeJson, getScopedKey } = require('../lib/db');
 const {
-  readJson,
-  writeJson,
-  deleteJson,
-  getScopedKey,
-  findOrderStoreEntries,
-  findOrderStoreEntriesByPayloadAccount,
-  findAllOrderStoreEntries,
-  pickBestOrderEntry,
-  entryToScopeData,
-} = require('../lib/db');
+  resolveOrdersScope,
+  listOrdersScopes,
+  getOrders,
+  setOrders,
+  clearOrders,
+  deleteOrdersByKeys,
+  getOrderIds,
+  getOrdersByIds,
+} = require('../lib/ordersDb');
 
 module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') {
@@ -66,53 +66,12 @@ module.exports = async function handler(req, res) {
       }
 
       const configHint = String(body.configHint || '').trim().toLowerCase();
-      if (configHint) {
-        const preferredScopeKey = `${accessAccountId}::${configHint}`;
-        const preferredEntry = await readJson(getScopedKey('orders', preferredScopeKey), null);
-        if (preferredEntry) {
-          const orders = Array.isArray(preferredEntry.orders) ? preferredEntry.orders : [];
-          return jsonResponse(res, 200, {
-            ok: true,
-            data: {
-              scopeKey: preferredScopeKey,
-              total: orders.length,
-              fetchedAt: preferredEntry.fetchedAt || null,
-              account: preferredEntry.account || '',
-              useDemoData: Boolean(preferredEntry.useDemoData),
-            },
-          });
-        }
-      }
-
-      let entries = await findOrderStoreEntries(accessAccountId);
-      let best = pickBestOrderEntry(entries, accessAccountId);
-
-      if (!best) {
-        entries = await findOrderStoreEntriesByPayloadAccount(accessAccountId);
-        best = pickBestOrderEntry(entries, accessAccountId);
-      }
-
-      if (!best) {
-        entries = await findAllOrderStoreEntries();
-        best = pickBestOrderEntry(entries, accessAccountId);
-      }
-
-      if (!best) {
-        return jsonResponse(res, 200, { ok: true, data: null });
-      }
-
-      return jsonResponse(res, 200, {
-        ok: true,
-        data: entryToScopeData(best),
-      });
+      const data = await resolveOrdersScope(accessAccountId, configHint);
+      return jsonResponse(res, 200, { ok: true, data });
     }
 
     if (action === 'list_orders_scopes') {
-      const entries = await findAllOrderStoreEntries();
-      const data = entries
-        .map((entry) => entryToScopeData(entry))
-        .filter((item) => item.total > 0);
-
+      const data = await listOrdersScopes();
       return jsonResponse(res, 200, { ok: true, data });
     }
 
@@ -121,38 +80,46 @@ module.exports = async function handler(req, res) {
       if (!scopeKey) {
         return jsonResponse(res, 400, { error: 'Brak scopeKey' });
       }
-      const entry = await readJson(getScopedKey('orders', scopeKey), null);
-      if (!entry) {
-        return jsonResponse(res, 200, { ok: true, data: null });
+
+      const options = {};
+      if (body.offset !== undefined) {
+        options.offset = body.offset;
+      }
+      if (body.limit !== undefined) {
+        options.limit = body.limit;
       }
 
-      const allOrders = Array.isArray(entry.orders) ? entry.orders : [];
-      const total = allOrders.length;
-      const hasPaging = body.offset !== undefined || body.limit !== undefined;
+      const data = await getOrders(scopeKey, options);
+      return jsonResponse(res, 200, { ok: true, data });
+    }
 
-      if (hasPaging) {
-        const offset = Math.max(0, Number(body.offset) || 0);
-        const limit = Math.max(1, Math.min(Number(body.limit) || 25, 100));
-        const orders = allOrders.slice(offset, offset + limit);
-        return jsonResponse(res, 200, {
-          ok: true,
-          data: {
-            ...entry,
-            orders,
-            total,
-            offset,
-            limit,
-            paginated: total > limit || offset > 0,
-          },
-        });
+    if (action === 'list_order_ids') {
+      const scopeKey = String(body.scopeKey || '').trim();
+      if (!scopeKey) {
+        return jsonResponse(res, 400, { error: 'Brak scopeKey' });
       }
 
+      const ids = await getOrderIds(scopeKey);
       return jsonResponse(res, 200, {
         ok: true,
-        data: {
-          ...entry,
-          total,
-        },
+        data: { ids, total: ids.length },
+      });
+    }
+
+    if (action === 'get_orders_by_ids') {
+      const scopeKey = String(body.scopeKey || '').trim();
+      const keys = Array.isArray(body.keys) ? body.keys : [];
+      if (!scopeKey) {
+        return jsonResponse(res, 400, { error: 'Brak scopeKey' });
+      }
+      if (!keys.length) {
+        return jsonResponse(res, 200, { ok: true, data: { orders: [], total: 0 } });
+      }
+
+      const orders = await getOrdersByIds(scopeKey, keys);
+      return jsonResponse(res, 200, {
+        ok: true,
+        data: { orders, total: orders.length },
       });
     }
 
@@ -161,7 +128,7 @@ module.exports = async function handler(req, res) {
       if (!scopeKey) {
         return jsonResponse(res, 400, { error: 'Brak scopeKey' });
       }
-      await writeJson(getScopedKey('orders', scopeKey), body.payload || {});
+      await setOrders(scopeKey, body.payload || {});
       return jsonResponse(res, 200, { ok: true });
     }
 
@@ -170,8 +137,18 @@ module.exports = async function handler(req, res) {
       if (!scopeKey) {
         return jsonResponse(res, 400, { error: 'Brak scopeKey' });
       }
-      await deleteJson(getScopedKey('orders', scopeKey));
+      await clearOrders(scopeKey);
       return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === 'delete_orders') {
+      const scopeKey = String(body.scopeKey || '').trim();
+      const keys = Array.isArray(body.keys) ? body.keys : [];
+      if (!scopeKey) {
+        return jsonResponse(res, 400, { error: 'Brak scopeKey' });
+      }
+      const deleted = await deleteOrdersByKeys(scopeKey, keys);
+      return jsonResponse(res, 200, { ok: true, data: { deleted } });
     }
 
     if (action === 'get_event_logs') {
