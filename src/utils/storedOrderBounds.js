@@ -1,3 +1,43 @@
+function pickStoredBounds(destination, bounds = {}) {
+  const localMin = bounds.localMin != null ? Number(bounds.localMin) : null;
+  const localMax = bounds.localMax != null ? Number(bounds.localMax) : null;
+  const serverMin = bounds.serverMin != null ? Number(bounds.serverMin) : null;
+  const serverMax = bounds.serverMax != null ? Number(bounds.serverMax) : null;
+
+  if (destination === 'local') {
+    return {
+      minStoredId: localMin,
+      maxStoredId: localMax,
+      storageSource: 'bufor lokalny',
+    };
+  }
+
+  if (destination === 'server') {
+    return {
+      minStoredId: serverMin,
+      maxStoredId: serverMax,
+      storageSource: 'baza danych',
+    };
+  }
+
+  if (destination === 'both') {
+    const mins = [localMin, serverMin].filter((value) => Number.isFinite(value) && value >= 1);
+    const maxes = [localMax, serverMax].filter((value) => Number.isFinite(value) && value >= 1);
+
+    return {
+      minStoredId: mins.length ? Math.min(...mins) : null,
+      maxStoredId: maxes.length ? Math.max(...maxes) : null,
+      storageSource: 'bufor lokalny i baza danych',
+    };
+  }
+
+  return {
+    minStoredId: null,
+    maxStoredId: null,
+    storageSource: '',
+  };
+}
+
 export function getMaxNumericOrderId(ids) {
   if (!Array.isArray(ids) || ids.length === 0) {
     return null;
@@ -18,27 +58,18 @@ export function getMaxNumericOrderId(ids) {
 }
 
 export function resolveContinueFromStored(destination, bounds = {}) {
-  const localMax = bounds.localMax != null ? Number(bounds.localMax) : null;
-  const serverMax = bounds.serverMax != null ? Number(bounds.serverMax) : null;
+  const { minStoredId, maxStoredId, storageSource } = pickStoredBounds(destination, bounds);
 
-  if (destination === 'local') {
-    if (!Number.isFinite(localMax) || localMax < 1) {
+  if (!Number.isFinite(maxStoredId) || maxStoredId < 1) {
+    if (destination === 'local') {
       return {
         ok: false,
-        error: 'Bufor lokalny jest pusty. Najpierw pobierz zamówienia lub wybierz inny zakres.',
+        error:
+          'Bufor lokalny jest pusty. Wybierz „Baza danych” jako miejsce zapisu albo najpierw pobierz dane do bufora.',
       };
     }
 
-    return {
-      ok: true,
-      fromId: localMax + 1,
-      lastStoredId: localMax,
-      storageSource: 'bufor lokalny',
-    };
-  }
-
-  if (destination === 'server') {
-    if (!Number.isFinite(serverMax) || serverMax < 1) {
+    if (destination === 'server') {
       return {
         ok: false,
         error: 'Baza danych jest pusta. Najpierw pobierz zamówienia lub wybierz inny zakres.',
@@ -46,33 +77,23 @@ export function resolveContinueFromStored(destination, bounds = {}) {
     }
 
     return {
-      ok: true,
-      fromId: serverMax + 1,
-      lastStoredId: serverMax,
-      storageSource: 'baza danych',
+      ok: false,
+      error:
+        'Brak zapisanych zamówień w buforze i bazie. Najpierw pobierz dane lub wybierz inny zakres.',
     };
   }
 
-  if (destination === 'both') {
-    const candidates = [localMax, serverMax].filter((value) => Number.isFinite(value) && value >= 1);
-    if (candidates.length === 0) {
-      return {
-        ok: false,
-        error:
-          'Bufor i baza są puste. Najpierw pobierz zamówienia lub wybierz inny zakres.',
-      };
-    }
+  const fromId = maxStoredId + 1;
 
-    const lastStoredId = Math.max(...candidates);
-    return {
-      ok: true,
-      fromId: lastStoredId + 1,
-      lastStoredId,
-      storageSource: 'bufor lokalny i baza danych',
-    };
-  }
-
-  return { ok: false, error: 'Wybierz miejsce zapisu importu.' };
+  return {
+    ok: true,
+    minStoredId,
+    maxStoredId,
+    lastStoredId: maxStoredId,
+    fromId,
+    idRange: { from: fromId, to: null },
+    storageSource,
+  };
 }
 
 export function getContinueFromStoredPreview(destination, bounds = {}) {
@@ -83,7 +104,7 @@ export function getContinueFromStoredPreview(destination, bounds = {}) {
 
   return {
     ok: true,
-    preview: `Od ID ${resolved.fromId} (po ostatnim zapisanym: ${resolved.lastStoredId} w ${resolved.storageSource}) do końca listy w Sellasist`,
+    preview: `Dobije brakujące najnowsze: od ID ${resolved.fromId} (po ostatnim zapisanym ${resolved.maxStoredId} w ${resolved.storageSource}). Nie uzupełnia starszych luk — do przerwanego importu służy „Wznów import”.`,
     ...resolved,
   };
 }

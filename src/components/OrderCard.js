@@ -5,7 +5,9 @@ import {
   formatMoney,
   getCustomerFullName,
   getOrderCarts,
+  getOrderImportedAt,
   getOrderPhone,
+  getOrderPlacedAt,
 } from '../utils/orderFormat';
 import { downloadOrdersCsv, getOrderExportFilename } from '../utils/exportOrdersCsv';
 import { ButtonLabel } from './ButtonLabel';
@@ -130,9 +132,10 @@ function EmailLink({ email, onClickLink }) {
   );
 }
 
-function OrderMetaPill({ children, className = '' }) {
+function OrderMetaPill({ children, className = '', title }) {
   return (
     <span
+      title={title}
       className={`inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-600 ${className}`}
     >
       {children}
@@ -220,8 +223,11 @@ export function OrderCard({ order, selected, onSelectedChange, onDelete }) {
             </h3>
             <div className="flex flex-wrap items-center gap-2 mt-1.5">
               <OrderStatusPill order={order} />
-              <OrderMetaPill>
-                {formatDate(order.date || order.created_at || order.date_add)}
+              <OrderMetaPill title="Data i godzina złożenia zamówienia w Sellasist">
+                Złożono: {formatDate(getOrderPlacedAt(order))}
+              </OrderMetaPill>
+              <OrderMetaPill title="Data i godzina pobrania tego zamówienia z API Sellasist do aplikacji">
+                Pobrano: {formatDate(getOrderImportedAt(order))}
               </OrderMetaPill>
               <OrderMetaPill className="font-semibold text-slate-800 bg-white">
                 {formatMoney(order.total, order.currency)}

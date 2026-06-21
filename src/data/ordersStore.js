@@ -1,5 +1,6 @@
 import { buildOrdersScopeKey, clearOrdersCache, readOrdersCache } from './ordersLocalDb';
 import { getOrderKey } from '../utils/orderSelection';
+import { stampOrderForStorage } from '../utils/orderFormat';
 import { filterOrders, hasActiveFilters } from '../utils/filterOrders';
 import { getOrderStatusLabel } from '../utils/orderFormat';
 import { DEFAULT_ORDER_SORT, normalizeOrderSort, sortOrdersList } from '../utils/sortOrders';
@@ -173,7 +174,7 @@ export async function putBatch(scopeKey, orders, options = {}) {
             scopeKey,
             orderKey,
             sortKey: getSortKey(order),
-            payload: order,
+            payload: stampOrderForStorage(order, options.fetchedAt || new Date().toISOString()),
           });
         }
 
@@ -315,10 +316,11 @@ export async function getFilteredPage(scopeKey, filters, offset = 0, limit = 25,
   };
 }
 
-export async function getMaxOrderId(scopeKey) {
+export async function getOrderIdBounds(scopeKey) {
   const db = await openDb();
   const tx = db.transaction('orders', 'readonly');
   const index = tx.objectStore('orders').index('by_scope');
+  let min = null;
   let max = null;
 
   await walkCursor(index, IDBKeyRange.only(scopeKey), (cursor) => {
@@ -326,13 +328,26 @@ export async function getMaxOrderId(scopeKey) {
     if (!Number.isFinite(num) || num < 1) {
       return;
     }
+    if (min == null || num < min) {
+      min = num;
+    }
     if (max == null || num > max) {
       max = num;
     }
   });
 
   await waitTx(tx);
-  return max;
+  return { minOrderId: min, maxOrderId: max };
+}
+
+export async function getMaxOrderId(scopeKey) {
+  const bounds = await getOrderIdBounds(scopeKey);
+  return bounds.maxOrderId;
+}
+
+export async function getMinOrderId(scopeKey) {
+  const bounds = await getOrderIdBounds(scopeKey);
+  return bounds.minOrderId;
 }
 
 export async function listOrderStatuses(scopeKey) {

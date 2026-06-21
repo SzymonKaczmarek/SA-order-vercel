@@ -12,6 +12,7 @@ const SKIP_DB_LOG_ACTIONS = new Set([
   'list_order_ids',
   'list_order_statuses',
   'get_max_order_id',
+  'get_order_id_bounds',
   'get_orders_by_ids',
 ]);
 
@@ -274,13 +275,21 @@ export async function listOrderStatusesFromServerDb(scopeKey) {
 }
 
 export async function getMaxOrderIdFromServerDb(scopeKey) {
-  const { data } = await callAppDb('get_max_order_id', { scopeKey });
+  const bounds = await getOrderIdBoundsFromServerDb(scopeKey);
+  return bounds.maxOrderId;
+}
+
+export async function getOrderIdBoundsFromServerDb(scopeKey) {
+  const { data } = await callAppDb('get_order_id_bounds', { scopeKey });
+  const minOrderId = data?.minOrderId;
   const maxOrderId = data?.maxOrderId;
-  if (maxOrderId == null) {
-    return null;
-  }
-  const num = Number(maxOrderId);
-  return Number.isFinite(num) && num >= 1 ? num : null;
+  const minNum = minOrderId == null ? null : Number(minOrderId);
+  const maxNum = maxOrderId == null ? null : Number(maxOrderId);
+
+  return {
+    minOrderId: Number.isFinite(minNum) && minNum >= 1 ? minNum : null,
+    maxOrderId: Number.isFinite(maxNum) && maxNum >= 1 ? maxNum : null,
+  };
 }
 
 export async function getOrdersByIdsFromServerDb(scopeKey, keys) {

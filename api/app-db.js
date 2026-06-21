@@ -14,6 +14,8 @@ const {
   getOrdersByIds,
   listOrderStatusLabels,
   getMaxOrderId,
+  getMinOrderId,
+  getOrderIdBounds,
 } = require('../lib/ordersDb');
 
 module.exports = async function handler(req, res) {
@@ -139,6 +141,19 @@ module.exports = async function handler(req, res) {
       return jsonResponse(res, 200, {
         ok: true,
         data: { maxOrderId },
+      });
+    }
+
+    if (action === 'get_order_id_bounds') {
+      const scopeKey = String(body.scopeKey || '').trim();
+      if (!scopeKey) {
+        return jsonResponse(res, 400, { error: 'Brak scopeKey' });
+      }
+
+      const bounds = await getOrderIdBounds(scopeKey);
+      return jsonResponse(res, 200, {
+        ok: true,
+        data: bounds,
       });
     }
 

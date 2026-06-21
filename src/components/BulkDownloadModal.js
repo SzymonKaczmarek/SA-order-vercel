@@ -167,8 +167,13 @@ export function BulkDownloadModal({
               {resumeInfo && (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 space-y-3">
                   <div>
-                    <p className="text-sm font-semibold text-amber-950">Wznowienie pobierania</p>
+                    <p className="text-sm font-semibold text-amber-950">Przerwany import</p>
                     <p className="text-xs text-amber-900/80 mt-1 leading-relaxed">
+                      Import „Wszystkie” nie doszedł do końca (błąd sieci, API albo ręczne przerwanie).
+                      Wznowienie dopina <strong>brakującą resztę tego samego importu</strong> — także
+                      starsze zamówienia, których jeszcze nie ma — od ostatniej pobranej paczki.
+                    </p>
+                    <p className="text-xs text-amber-900/90 mt-2 font-medium">
                       {formatBulkImportResumeSummary(resumeInfo)}
                     </p>
                   </div>
@@ -233,7 +238,8 @@ export function BulkDownloadModal({
                       Wszystkie zamówienia
                     </span>
                     <span className="block text-xs text-slate-500 mt-0.5">
-                      Pełny import z API bez ograniczenia ID.
+                      Pełny import z API bez ograniczenia ID. Gdy urwie się w połowie — użyj u góry
+                      okna <strong>„Wznów import”</strong> (dopina brakującą resztę, także starsze).
                     </span>
                   </span>
                 </label>
@@ -355,12 +361,12 @@ export function BulkDownloadModal({
                   <span className="flex-1 space-y-2">
                     <span>
                       <span className="block text-sm font-semibold text-slate-900">
-                        Kontynuuj od ostatniego zapisanego ID
+                        Dobij brakujące najnowsze (od ostatniego ID)
                       </span>
                       <span className="block text-xs text-slate-500 mt-0.5">
-                        Pobiera tylko brakującą resztę — od kolejnego ID po ostatnim zamówieniu już
-                        zapisanym w wybranym miejscu zapisu (bufor / baza). Istniejące dane
-                        zostają, nowe są dopisywane.
+                        Pobiera tylko <strong>nowe zamówienia, których jeszcze nie masz</strong> — od
+                        kolejnego ID po najwyższym zapisanym rekordzie. Dokańczenie = dopięcie
+                        najnowszych, nie wracanie do starszych luk. Nie czyści bufora ani bazy.
                       </span>
                     </span>
 
@@ -372,14 +378,18 @@ export function BulkDownloadModal({
                           <>
                             <strong>{continuePreview.preview}</strong>
                             <p className="mt-1 text-sky-800/80">
+                              Tylko brakujące najnowsze (ID wyższe niż ostatni zapis). Starszych luk w
+                              środku archiwum ta opcja nie uzupełnia.
+                            </p>
+                            <p className="mt-1 text-sky-800/80">
                               Bufor:{' '}
-                              {storedOrderBounds?.localMax != null
-                                ? `ostatnie ID ${storedOrderBounds.localMax}`
+                              {storedOrderBounds?.localMin != null && storedOrderBounds?.localMax != null
+                                ? `ID ${storedOrderBounds.localMin}–${storedOrderBounds.localMax}`
                                 : 'brak danych'}
                               {' · '}
                               Baza:{' '}
-                              {storedOrderBounds?.serverMax != null
-                                ? `ostatnie ID ${storedOrderBounds.serverMax}`
+                              {storedOrderBounds?.serverMin != null && storedOrderBounds?.serverMax != null
+                                ? `ID ${storedOrderBounds.serverMin}–${storedOrderBounds.serverMax}`
                                 : 'brak danych'}
                             </p>
                           </>
@@ -482,8 +492,8 @@ export function BulkDownloadModal({
                 </button>
               </div>
               <p className="text-[11px] text-slate-500 leading-relaxed">
-                <strong>Przerwij</strong> — zatrzymuje import i zostawia pobrane zamówienia (możesz
-                wznowić później). <strong>Anuluj</strong> — cofa cały bieżący import.
+                <strong>Przerwij</strong> — zatrzymuje import i zostawia pobrane zamówienia (checkpoint
+                do wznowienia). <strong>Anuluj</strong> — cofa cały bieżący import.
               </p>
             </>
           )}
@@ -514,13 +524,31 @@ export function BulkDownloadModal({
 
           {isError && (
             <>
+              {resumeInfo && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+                  <div>
+                    <p className="text-sm font-semibold text-amber-950">Import można wznowić</p>
+                    <p className="text-xs text-amber-900/80 mt-1 leading-relaxed">
+                      {formatBulkImportResumeSummary(resumeInfo)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onResumeDownload}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-brand-primary text-white px-4 py-3 text-sm font-semibold hover:opacity-90"
+                  >
+                    <ButtonLabel icon={IconDownload}>Wznów import</ButtonLabel>
+                  </button>
+                </div>
+              )}
+
               <div className="rounded-2xl bg-red-50 border border-red-100 p-4 text-sm text-red-700">
                 {error}
               </div>
               <button
                 type="button"
                 onClick={onClose}
-                className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-brand-primary text-white px-4 py-3 text-sm font-semibold"
+                className="w-full inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white text-slate-700 px-4 py-3 text-sm font-semibold hover:bg-slate-50"
               >
                 <ButtonLabel icon={IconX}>Zamknij</ButtonLabel>
               </button>

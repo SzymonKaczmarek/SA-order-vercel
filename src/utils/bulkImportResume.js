@@ -30,6 +30,28 @@ export function readBulkImportResume(accessAccountId) {
   return entry;
 }
 
+export function buildBulkImportResumePayload(sessionMeta, progress) {
+  if (!sessionMeta?.downloadScope || !sessionMeta?.destination) {
+    return null;
+  }
+
+  const fetchedTotal = Number(progress?.fetchedTotal) || 0;
+  if (fetchedTotal <= 0) {
+    return null;
+  }
+
+  return {
+    configHint: sessionMeta.configHint || '',
+    downloadScope: sessionMeta.downloadScope,
+    destination: sessionMeta.destination,
+    offset: progress.offset ?? 0,
+    packageNum: progress.packageNum ?? 0,
+    fetchedTotal,
+    totalKnown: progress.totalKnown ?? null,
+    importStartedAt: sessionMeta.importStartedAt || new Date().toISOString(),
+  };
+}
+
 export function writeBulkImportResume(accessAccountId, payload) {
   if (!accessAccountId || !payload) return;
   const store = readStore();
@@ -52,11 +74,12 @@ export function formatBulkImportResumeSummary(resume) {
   if (!resume) return '';
   const scope = formatDownloadScopeSummary(resume.downloadScope);
   const count = Number(resume.fetchedTotal) || 0;
+  const offset = Number(resume.offset) || 0;
   const dest =
     resume.destination === 'server'
       ? 'baza danych'
       : resume.destination === 'both'
         ? 'bufor + baza'
         : 'bufor lokalny';
-  return `${scope} · pobrano ${count} · zapis: ${dest}`;
+  return `${scope} · pobrano ${count} · wznowienie od offset ${offset} · zapis: ${dest}`;
 }

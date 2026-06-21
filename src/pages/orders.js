@@ -21,7 +21,7 @@ import {
   buildOrdersScopeKey,
   formatFetchedAt,
 } from '../data/ordersLocalDb';
-import { listOrderStatuses, getMaxOrderId } from '../data/ordersStore';
+import { listOrderStatuses, getOrderIdBounds } from '../data/ordersStore';
 import { getAccessAccountDisplayName } from '../data/accessAccounts';
 import { fetchSellasistOrders, testSellasistConnection } from '../hooks/useSellasistApi';
 import {
@@ -32,7 +32,7 @@ import {
   getOrdersFromServerDb,
   listOrderIdsFromServerDb,
   listOrderStatusesFromServerDb,
-  getMaxOrderIdFromServerDb,
+  getOrderIdBoundsFromServerDb,
   resolveOrdersScopeFromDb,
   setOrdersToServerDb,
 } from '../hooks/useAppDbApi';
@@ -48,6 +48,7 @@ import {
   clearBulkImportResume,
   readBulkImportResume,
   writeBulkImportResume,
+  buildBulkImportResumePayload,
 } from '../utils/bulkImportResume';
 import { DEFAULT_ORDER_SORT, normalizeOrderSort } from '../utils/sortOrders';
 import { downloadOrdersCsv, getOrdersExportFilename } from '../utils/exportOrdersCsv';
@@ -110,7 +111,9 @@ function OrdersView() {
   const [availableStatuses, setAvailableStatuses] = useState([]);
   const [bulkStoredBounds, setBulkStoredBounds] = useState({
     loading: false,
+    localMin: null,
     localMax: null,
+    serverMin: null,
     serverMax: null,
   });
   const [selectedIds, setSelectedIds] = useState([]);
@@ -1026,23 +1029,42 @@ function OrdersView() {
       setBulkStoredBounds((current) => ({ ...current, loading: true }));
 
       const localScopeKey = getLocalScopeKey();
-      const serverScopeKey = getServerScopeKey();
+      let serverScopeKey = getServerScopeKey();
 
+      if (activeAccountId) {
+        try {
+          const resolved = await resolveOrdersScopeFromDb(activeAccountId, getConfigHint(config));
+          if (resolved?.scopeKey) {
+            serverScopeKey = resolved.scopeKey;
+          }
+        } catch (_err) {
+          // zostaje scope z buildOrdersScopeKey
+        }
+      }
+
+      let localMin = null;
       let localMax = null;
+      let serverMin = null;
       let serverMax = null;
 
-      if (localScopeKey && localOrdersTotal > 0) {
+      if (localScopeKey) {
         try {
-          localMax = await getMaxOrderId(localScopeKey);
+          const bounds = await getOrderIdBounds(localScopeKey);
+          localMin = bounds.minOrderId;
+          localMax = bounds.maxOrderId;
         } catch (_err) {
+          localMin = null;
           localMax = null;
         }
       }
 
-      if (serverScopeKey && serverOrdersTotal > 0) {
+      if (serverScopeKey) {
         try {
-          serverMax = await getMaxOrderIdFromServerDb(serverScopeKey);
+          const bounds = await getOrderIdBoundsFromServerDb(serverScopeKey);
+          serverMin = bounds.minOrderId;
+          serverMax = bounds.maxOrderId;
         } catch (_err) {
+          serverMin = null;
           serverMax = null;
         }
       }
@@ -1050,7 +1072,9 @@ function OrdersView() {
       if (!cancelled) {
         setBulkStoredBounds({
           loading: false,
+          localMin,
           localMax,
+          serverMin,
           serverMax,
         });
       }
@@ -1064,10 +1088,9 @@ function OrdersView() {
     activeAccountId,
     bulkModal.open,
     bulkModal.phase,
+    config,
     getLocalScopeKey,
     getServerScopeKey,
-    localOrdersTotal,
-    serverOrdersTotal,
   ]);
 
   const runBulkDownload = useCallback(
@@ -1219,6 +1242,29 @@ function OrdersView() {
         },
       });
 
+      const persistImportCheckpoint = (progress) => {
+        const session = bulkSessionRef.current;
+        if (!session || !activeAccountId) {
+          return;
+        }
+
+        const payload = buildBulkImportResumePayload(
+          {
+            configHint: getConfigHint(session.importConfig),
+            downloadScope: session.downloadScope,
+            destination: session.destination,
+            importStartedAt: session.importStartedAt,
+          },
+          progress
+        );
+
+        if (!payload) {
+          return;
+        }
+
+        writeBulkImportResume(activeAccountId, payload);
+      };
+
       const appendBatchToStore = async ({ batch, meta, apiRaw: batchApiRaw }) => {
         fetchedAny = true;
         if (savesLocal) {
@@ -1267,6 +1313,7 @@ function OrdersView() {
             onBatch: appendBatchToStore,
             onProgress: (progress) => {
               bulkProgressRef.current = progress;
+              persistImportCheckpoint(progress);
               setBulkModal((current) => ({
                 ...current,
                 progress,
@@ -1344,16 +1391,7 @@ function OrdersView() {
           const progress = bulkProgressRef.current || INITIAL_PROGRESS;
 
           if (mode === 'pause' && session) {
-            writeBulkImportResume(activeAccountId, {
-              configHint: getConfigHint(session.importConfig),
-              downloadScope: session.downloadScope,
-              destination: session.destination,
-              offset: progress.offset ?? 0,
-              packageNum: progress.packageNum ?? 0,
-              fetchedTotal: progress.fetchedTotal ?? 0,
-              totalKnown: progress.totalKnown ?? null,
-              importStartedAt: session.importStartedAt,
-            });
+            persistImportCheckpoint(progress);
             bumpBulkResume();
 
             if (session.destination === 'server') {
@@ -1458,11 +1496,19 @@ function OrdersView() {
         });
 
         const baseMessage = err.message || 'Nie udało się pobrać zamówień.';
-        const suffix = fetchedAny
-          ? ` Pobrane do tej pory zamówienia są w ${savedWhere}.`
-          : '';
+        const session = bulkSessionRef.current;
+        const progress = bulkProgressRef.current || INITIAL_PROGRESS;
+
+        if (session && fetchedAny) {
+          persistImportCheckpoint(progress);
+          bumpBulkResume();
+        }
 
         bulkSessionRef.current = null;
+
+        const suffix = fetchedAny
+          ? ` Pobrane do tej pory zamówienia są w ${savedWhere}. Aby dokończyć ten sam import (także starsze brakujące), użyj „Wznów import”. Aby dobić tylko najnowsze — opcja „Dobij brakujące najnowsze”.`
+          : '';
 
         setBulkModal((current) => ({
           ...current,

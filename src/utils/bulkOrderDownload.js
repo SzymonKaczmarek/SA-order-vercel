@@ -148,8 +148,11 @@ export function parseDownloadScope(scope, { idFrom, idTo, latestCount, storedBou
       ok: true,
       downloadScope: {
         type: 'continueFromStored',
+        idRange: resolved.idRange,
         fromId: resolved.fromId,
         lastStoredId: resolved.lastStoredId,
+        minStoredId: resolved.minStoredId,
+        maxStoredId: resolved.maxStoredId,
         storageSource: resolved.storageSource,
       },
     };
@@ -181,11 +184,11 @@ export function formatDownloadScopeSummary(downloadScope) {
 
   if (downloadScope.type === 'continueFromStored') {
     const fromId = downloadScope.fromId;
-    const lastId = downloadScope.lastStoredId;
+    const lastId = downloadScope.lastStoredId ?? downloadScope.maxStoredId;
     if (fromId && lastId) {
-      return `Kontynuacja od ID ${fromId} (po ${lastId}) do końca`;
+      return `Dobij brakujące najnowsze: od ID ${fromId} (po ${lastId})`;
     }
-    return 'Kontynuacja od ostatniego zapisanego ID do końca';
+    return 'Dobij brakujące najnowsze od ostatniego zapisanego ID';
   }
 
   if (downloadScope.type === 'idRange' && downloadScope.idRange) {
@@ -222,11 +225,9 @@ export async function downloadAllOrders(
   { onProgress, onBatch, signal, downloadScope, resumeFrom = null }
 ) {
   const idRange =
-    downloadScope?.type === 'idRange'
+    downloadScope?.type === 'idRange' || downloadScope?.type === 'continueFromStored'
       ? downloadScope.idRange
-      : downloadScope?.type === 'continueFromStored'
-        ? { from: downloadScope.fromId, to: null }
-        : null;
+      : null;
   const latestCount = downloadScope?.type === 'latest' ? downloadScope.latestCount : null;
 
   const limiter = new RequestRateLimiter(MAX_REQUESTS_PER_MINUTE);

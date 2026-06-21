@@ -138,6 +138,30 @@ export function getOrderStatusStyles(order) {
   return 'bg-slate-100 text-slate-700 border-slate-200 ring-slate-100';
 }
 
+export function getOrderPlacedAt(order) {
+  return order?.date || order?.created_at || order?.date_add || null;
+}
+
+export function getOrderImportedAt(order) {
+  return order?.saor_imported_at || order?.imported_at || order?.fetched_at || null;
+}
+
+export function stampOrderForStorage(order, importedAt = new Date().toISOString()) {
+  if (!order || typeof order !== 'object') {
+    return order;
+  }
+
+  if (order.saor_imported_at) {
+    return order;
+  }
+
+  const at = importedAt || new Date().toISOString();
+  return {
+    ...order,
+    saor_imported_at: at,
+  };
+}
+
 export function formatDate(value) {
   if (!value) return '—';
   const date = new Date(value);
