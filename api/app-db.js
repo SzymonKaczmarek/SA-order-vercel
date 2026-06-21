@@ -18,6 +18,16 @@ const {
   getMinOrderId,
   getOrderIdBounds,
 } = require('../lib/ordersDb');
+const {
+  ensureClientsSchema,
+  resolveClientsScope,
+  listClientsScopes,
+  getClients,
+  setClients,
+  appendClients,
+  clearClients,
+  deleteClientsByKeys,
+} = require('../lib/clientsDb');
 
 module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') {
@@ -239,6 +249,101 @@ module.exports = async function handler(req, res) {
         return jsonResponse(res, 400, { error: 'Brak scopeKey' });
       }
       const deleted = await deleteOrdersByKeys(scopeKey, keys);
+      return jsonResponse(res, 200, { ok: true, data: { deleted } });
+    }
+
+    if (action === 'resolve_clients_scope') {
+      const accessAccountId = String(body.accessAccountId || '').trim();
+      if (!accessAccountId) {
+        return jsonResponse(res, 400, { error: 'Brak accessAccountId' });
+      }
+
+      await ensureClientsSchema();
+      const configHint = String(body.configHint || '').trim().toLowerCase();
+      const data = await resolveClientsScope(accessAccountId, configHint);
+      return jsonResponse(res, 200, { ok: true, data });
+    }
+
+    if (action === 'list_clients_scopes') {
+      await ensureClientsSchema();
+      const data = await listClientsScopes();
+      return jsonResponse(res, 200, { ok: true, data });
+    }
+
+    if (action === 'get_clients') {
+      const scopeKey = String(body.scopeKey || '').trim();
+      if (!scopeKey) {
+        return jsonResponse(res, 400, { error: 'Brak scopeKey' });
+      }
+
+      await ensureClientsSchema();
+      const options = {};
+      if (body.offset !== undefined) {
+        options.offset = body.offset;
+      }
+      if (body.limit !== undefined) {
+        options.limit = body.limit;
+      }
+      if (body.sortBy) {
+        options.sortBy = String(body.sortBy).trim();
+      }
+      if (body.sortDir) {
+        options.sortDir = String(body.sortDir).trim();
+      }
+
+      const data = await getClients(scopeKey, options);
+      return jsonResponse(res, 200, { ok: true, data });
+    }
+
+    if (action === 'set_clients') {
+      const scopeKey = String(body.scopeKey || '').trim();
+      if (!scopeKey) {
+        return jsonResponse(res, 400, { error: 'Brak scopeKey' });
+      }
+      try {
+        await ensureClientsSchema();
+        await setClients(scopeKey, body.payload || {});
+      } catch (err) {
+        const formatted = formatDbError(err, 'clients_insert');
+        return jsonResponse(res, 500, { ok: false, ...formatted });
+      }
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === 'append_clients') {
+      const scopeKey = String(body.scopeKey || '').trim();
+      const clients = Array.isArray(body.clients) ? body.clients : [];
+      if (!scopeKey) {
+        return jsonResponse(res, 400, { error: 'Brak scopeKey' });
+      }
+      try {
+        await ensureClientsSchema();
+        const data = await appendClients(scopeKey, clients, body.payload || {});
+        return jsonResponse(res, 200, { ok: true, data });
+      } catch (err) {
+        const formatted = formatDbError(err, 'clients_insert');
+        return jsonResponse(res, 500, { ok: false, ...formatted });
+      }
+    }
+
+    if (action === 'clear_clients') {
+      const scopeKey = String(body.scopeKey || '').trim();
+      if (!scopeKey) {
+        return jsonResponse(res, 400, { error: 'Brak scopeKey' });
+      }
+      await ensureClientsSchema();
+      await clearClients(scopeKey);
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === 'delete_clients') {
+      const scopeKey = String(body.scopeKey || '').trim();
+      const keys = Array.isArray(body.keys) ? body.keys : [];
+      if (!scopeKey) {
+        return jsonResponse(res, 400, { error: 'Brak scopeKey' });
+      }
+      await ensureClientsSchema();
+      const deleted = await deleteClientsByKeys(scopeKey, keys);
       return jsonResponse(res, 200, { ok: true, data: { deleted } });
     }
 

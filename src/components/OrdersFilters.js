@@ -106,6 +106,16 @@ export function OrdersFilters({
           </FilterField>
         </div>
 
+        <FilterField label="Symbol / EAN produktu">
+          <input
+            type="text"
+            value={filters.productCode}
+            onChange={(e) => set('productCode', e.target.value)}
+            className={inputClass}
+            placeholder="min. 3 znaki, np. SPOD-SZT lub 5063129001018"
+          />
+        </FilterField>
+
         <div className="grid grid-cols-2 gap-2">
           <FilterField label="Kwota od">
             <input

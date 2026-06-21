@@ -14,6 +14,9 @@ const SKIP_DB_LOG_ACTIONS = new Set([
   'get_max_order_id',
   'get_order_id_bounds',
   'get_orders_by_ids',
+  'resolve_clients_scope',
+  'list_clients_scopes',
+  'get_clients',
 ]);
 
 function summarizePayloadForLog(action, payload = {}) {
@@ -349,5 +352,95 @@ export async function getOrderIdBoundsFromServerDb(scopeKey) {
 
 export async function deleteOrdersFromServerDb(scopeKey, keys) {
   const { data } = await callAppDb('delete_orders', { scopeKey, keys });
+  return Number(data?.deleted) || 0;
+}
+
+export async function resolveClientsScopeFromDb(accessAccountId, configHint = '') {
+  try {
+    const { data } = await callAppDb('resolve_clients_scope', {
+      accessAccountId,
+      configHint,
+    });
+    if (data?.scopeKey && Number(data.total) > 0) {
+      return data;
+    }
+  } catch (err) {
+    if (!/Nieznana akcja/i.test(err.message)) {
+      throw err;
+    }
+  }
+
+  const hints = [...new Set([configHint, 'demo', 'unknown'].filter(Boolean))];
+  for (const hint of hints) {
+    const scopeKey = `${accessAccountId}::${hint}`;
+    try {
+      const entry = await getClientsFromServerDb(scopeKey, { offset: 0, limit: 1 });
+      const total = Number(entry?.total) || entry?.clients?.length || 0;
+      if (total > 0) {
+        return {
+          scopeKey,
+          total,
+          fetchedAt: entry?.fetchedAt || null,
+          account: entry?.account || '',
+          useDemoData: Boolean(entry?.useDemoData),
+          accessAccountId,
+        };
+      }
+    } catch (_e) {
+      // próbujemy kolejny hint
+    }
+  }
+
+  try {
+    const { data } = await callAppDb('list_clients_scopes');
+    const list = Array.isArray(data) ? data : [];
+    const match =
+      list.find((item) => item.accessAccountId === accessAccountId) ||
+      list.find((item) => String(item.scopeKey || '').startsWith(`${accessAccountId}::`)) ||
+      (list.length === 1 ? list[0] : null);
+
+    if (match?.scopeKey && Number(match.total) > 0) {
+      return match;
+    }
+  } catch (_e) {
+    // brak listy po stronie API
+  }
+
+  return null;
+}
+
+export async function getClientsFromServerDb(scopeKey, { offset, limit, sort } = {}) {
+  const requestPayload = { scopeKey };
+  if (offset !== undefined) {
+    requestPayload.offset = offset;
+  }
+  if (limit !== undefined) {
+    requestPayload.limit = limit;
+  }
+  if (sort?.field) {
+    requestPayload.sortBy = sort.field;
+  }
+  if (sort?.direction) {
+    requestPayload.sortDir = sort.direction;
+  }
+  const { data } = await callAppDb('get_clients', requestPayload);
+  return data;
+}
+
+export async function setClientsToServerDb(scopeKey, payload) {
+  await callAppDb('set_clients', { scopeKey, payload });
+}
+
+export async function appendClientsToServerDb(scopeKey, clients, payload = {}) {
+  const { data } = await callAppDb('append_clients', { scopeKey, clients, payload });
+  return data;
+}
+
+export async function clearClientsFromServerDb(scopeKey) {
+  await callAppDb('clear_clients', { scopeKey });
+}
+
+export async function deleteClientsFromServerDb(scopeKey, keys) {
+  const { data } = await callAppDb('delete_clients', { scopeKey, keys });
   return Number(data?.deleted) || 0;
 }

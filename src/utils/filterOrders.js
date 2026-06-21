@@ -1,9 +1,10 @@
-import { getCustomerFullName, getOrderPhone, getOrderStatusLabel } from './orderFormat';
+import { getCustomerFullName, getOrderCarts, getOrderPhone, getOrderStatusLabel } from './orderFormat';
 
 export const EMPTY_FILTERS = {
   status: '',
   orderId: '',
   surname: '',
+  productCode: '',
   amountFrom: '',
   amountTo: '',
   dateFrom: '',
@@ -51,6 +52,45 @@ function getOrderIdText(order) {
   return String(id);
 }
 
+function normalizeProductSearchText(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeProductSearchDigits(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function getCartItemProductValues(item) {
+  if (!item || typeof item !== 'object') return [];
+
+  return [item.ean, item.symbol, item.catalog_number].filter(
+    (value) => value != null && String(value).trim() !== ''
+  );
+}
+
+export function orderHasMatchingProductCode(order, queryRaw) {
+  const query = String(queryRaw || '').trim();
+  if (query.length < MIN_TEXT_FILTER_LENGTH) return true;
+
+  const queryText = normalizeProductSearchText(query);
+  const queryDigits = normalizeProductSearchDigits(query);
+  const items = getOrderCarts(order);
+
+  return items.some((item) =>
+    getCartItemProductValues(item).some((value) => {
+      const text = normalizeProductSearchText(value);
+      if (text.includes(queryText)) return true;
+
+      if (queryDigits.length >= MIN_TEXT_FILTER_LENGTH) {
+        const digits = normalizeProductSearchDigits(value);
+        if (digits.includes(queryDigits)) return true;
+      }
+
+      return false;
+    })
+  );
+}
+
 export function getUniqueOrderStatuses(orders) {
   const set = new Set();
   orders.forEach((order) => {
@@ -86,6 +126,10 @@ export function filterOrders(orders, filters) {
     if (isDeferredTextFilter(filters.surname)) {
       const query = String(filters.surname).toLowerCase().trim();
       if (!getCustomerFilterText(order).includes(query)) return false;
+    }
+
+    if (isDeferredTextFilter(filters.productCode)) {
+      if (!orderHasMatchingProductCode(order, filters.productCode)) return false;
     }
 
     const total = Number(order.total);
@@ -131,7 +175,7 @@ export function hasActiveFilters(filters) {
   return Object.entries(filters).some(([key, value]) => {
     const text = String(value || '').trim();
     if (!text) return false;
-    if (key === 'orderId' || key === 'surname') {
+    if (key === 'orderId' || key === 'surname' || key === 'productCode') {
       return text.length >= MIN_TEXT_FILTER_LENGTH;
     }
     return true;

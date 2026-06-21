@@ -1,5 +1,6 @@
 const { ensureTable, getConnectionString } = require('../lib/db');
 const { ensureOrdersSchema, migrateAllLegacyOrderScopes } = require('../lib/ordersDb');
+const { ensureClientsSchema } = require('../lib/clientsDb');
 
 async function main() {
   const url = getConnectionString();
@@ -13,6 +14,9 @@ async function main() {
 
   await ensureOrdersSchema();
   console.log('Migracja OK: orders_scopes + orders');
+
+  await ensureClientsSchema();
+  console.log('Migracja OK: clients_scopes + clients');
 
   const result = await migrateAllLegacyOrderScopes();
   if (result.migrated > 0) {

@@ -12,6 +12,7 @@ import {
   IconInbox,
   IconLogout,
   IconPlug,
+  IconUsers,
 } from './Icons';
 
 const MODULES = [
@@ -23,6 +24,14 @@ const MODULES = [
     icon: IconInbox,
     accent: 'bg-brand-primary text-white',
     featured: true,
+  },
+  {
+    id: 'clients',
+    title: 'Klienci Sellasist',
+    desc: 'Pobieranie, filtrowanie i zarządzanie bazą klientów z API Sellasist.',
+    path: '/clients',
+    icon: IconUsers,
+    accent: 'bg-teal-800 text-teal-50',
   },
   {
     id: 'accounts',
@@ -68,6 +77,12 @@ const WORKFLOW = [
     title: 'Zamówienia',
     desc: 'Pobierz dane i pracuj w bazie danych lub buforze lokalnym.',
     path: '/orders',
+  },
+  {
+    step: 4,
+    title: 'Klienci',
+    desc: 'Importuj i filtruj klientów z endpointu GET /users.',
+    path: '/clients',
   },
 ];
 
