@@ -1,11 +1,13 @@
 const { handleOptions, rejectMethod, jsonResponse } = require('../lib/api');
 const { isDefaultAdminCredentials } = require('../lib/defaultAdmin');
+const { formatDbError } = require('../lib/dbErrors');
 const { readJson, writeJson, getScopedKey } = require('../lib/db');
 const {
   resolveOrdersScope,
   listOrdersScopes,
   getOrders,
   setOrders,
+  appendOrders,
   clearOrders,
   deleteOrdersByKeys,
   getOrderIds,
@@ -128,8 +130,28 @@ module.exports = async function handler(req, res) {
       if (!scopeKey) {
         return jsonResponse(res, 400, { error: 'Brak scopeKey' });
       }
-      await setOrders(scopeKey, body.payload || {});
+      try {
+        await setOrders(scopeKey, body.payload || {});
+      } catch (err) {
+        const formatted = formatDbError(err, 'orders_insert');
+        return jsonResponse(res, 500, { ok: false, ...formatted });
+      }
       return jsonResponse(res, 200, { ok: true });
+    }
+
+    if (action === 'append_orders') {
+      const scopeKey = String(body.scopeKey || '').trim();
+      const orders = Array.isArray(body.orders) ? body.orders : [];
+      if (!scopeKey) {
+        return jsonResponse(res, 400, { error: 'Brak scopeKey' });
+      }
+      try {
+        const data = await appendOrders(scopeKey, orders, body.payload || {});
+        return jsonResponse(res, 200, { ok: true, data });
+      } catch (err) {
+        const formatted = formatDbError(err, 'orders_insert');
+        return jsonResponse(res, 500, { ok: false, ...formatted });
+      }
     }
 
     if (action === 'clear_orders') {
@@ -183,6 +205,7 @@ module.exports = async function handler(req, res) {
 
     return jsonResponse(res, 400, { error: 'Nieznana akcja' });
   } catch (err) {
-    return jsonResponse(res, 500, { error: err.message || 'Błąd bazy danych' });
+    const formatted = formatDbError(err);
+    return jsonResponse(res, 500, { ok: false, ...formatted });
   }
 };

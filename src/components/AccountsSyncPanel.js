@@ -17,7 +17,7 @@ export function AccountsSyncPanel({
       <div className="grid sm:grid-cols-2 gap-3">
         <div className="rounded-2xl border border-emerald-100 bg-emerald-50/40 p-3 space-y-2">
           <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-            Baza serwerowa (Neon)
+            Baza danych
           </p>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs text-slate-500">Status</span>

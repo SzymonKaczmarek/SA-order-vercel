@@ -1,6 +1,6 @@
 import React from 'react';
 import { ButtonLabel } from './ButtonLabel';
-import { IconArrowRight, IconDatabase, IconTrash } from './Icons';
+import { IconDatabase, IconTrash } from './Icons';
 
 export const ORDERS_PAGE_SIZES = [5, 10, 25, 50, 100];
 
@@ -14,15 +14,15 @@ export function OrdersSelectionBar({
   activeSource,
   onToggleSelectAll,
   onDeleteSelected,
-  onMoveSelectedToSaved,
-  onMoveSelectedToBuffer,
+  onMoveSelectedToLocal,
+  onMoveSelectedToServer,
   pageSize,
   pageSizes = ORDERS_PAGE_SIZES,
   onPageSizeChange,
 }) {
   const hasSelection = selectedCount > 0;
-  const moveToSavedDisabled = !hasSelection || activeSource === 'saved';
-  const moveToBufferDisabled = !hasSelection || activeSource === 'buffer';
+  const isLocalView = activeSource === 'local';
+  const moveDisabled = !hasSelection;
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -55,26 +55,29 @@ export function OrdersSelectionBar({
           Usuń zaznaczone
         </ButtonLabel>
       </button>
-      <button
-        type="button"
-        onClick={onMoveSelectedToSaved}
-        disabled={moveToSavedDisabled}
-        className={`${btnClass} border border-sky-200 bg-sky-50 text-sky-800 hover:bg-sky-100`}
-      >
-        <ButtonLabel icon={IconDatabase} iconClassName="w-3.5 h-3.5 shrink-0">
-          Do bazy
-        </ButtonLabel>
-      </button>
-      <button
-        type="button"
-        onClick={onMoveSelectedToBuffer}
-        disabled={moveToBufferDisabled}
-        className={`${btnClass} border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100`}
-      >
-        <ButtonLabel icon={IconArrowRight} iconClassName="w-3.5 h-3.5 shrink-0">
-          Do bufora
-        </ButtonLabel>
-      </button>
+      {isLocalView ? (
+        <button
+          type="button"
+          onClick={onMoveSelectedToServer}
+          disabled={moveDisabled}
+          className={`${btnClass} border border-sky-200 bg-sky-50 text-sky-800 hover:bg-sky-100`}
+        >
+          <ButtonLabel icon={IconDatabase} iconClassName="w-3.5 h-3.5 shrink-0">
+            Do bazy danych
+          </ButtonLabel>
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onMoveSelectedToLocal}
+          disabled={moveDisabled}
+          className={`${btnClass} border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100`}
+        >
+          <ButtonLabel icon={IconDatabase} iconClassName="w-3.5 h-3.5 shrink-0">
+            Do bufora lokalnego
+          </ButtonLabel>
+        </button>
+      )}
 
       <div className="flex flex-wrap items-center gap-2 ml-auto">
         <label htmlFor="orders-page-size" className="text-xs font-medium text-slate-500">

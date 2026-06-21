@@ -1,14 +1,35 @@
 import React, { useEffect, useState } from 'react';
 import { ButtonLabel } from './ButtonLabel';
 import {
-  IconDatabase,
   IconDownload,
-  IconEye,
   IconHourglass,
-  IconLayers,
   IconX,
 } from './Icons';
 import { formatDownloadScopeSummary, parseDownloadScope } from '../utils/bulkOrderDownload';
+
+const IMPORT_DESTINATIONS = [
+  {
+    id: 'local',
+    label: 'Bufor lokalny',
+    desc: 'Zapis od razu w buforze lokalnym. Widok bufora po imporcie.',
+  },
+  {
+    id: 'server',
+    label: 'Baza danych',
+    desc: 'Zapis od razu w bazie danych. Widok bazy po imporcie.',
+  },
+  {
+    id: 'both',
+    label: 'Bufor lokalny + baza danych',
+    desc: 'Każda paczka trafia jednocześnie do bufora i bazy danych.',
+  },
+];
+
+const DESTINATION_LABELS = {
+  local: 'buforze lokalnym',
+  server: 'bazie danych',
+  both: 'buforze lokalnym i bazie danych',
+};
 
 function StatRow({ label, value }) {
   return (
@@ -26,15 +47,13 @@ export function BulkDownloadModal({
   error,
   resultCount,
   downloadScope,
+  importDestination = 'local',
   onCancel,
   onStartDownload,
-  onSaveToDb,
-  onSaveToServerDb,
-  onBufferOnly,
-  onSaveToBoth,
   onClose,
 }) {
   const [scope, setScope] = useState('all');
+  const [destination, setDestination] = useState('local');
   const [idFrom, setIdFrom] = useState('');
   const [idTo, setIdTo] = useState('');
   const [latestCount, setLatestCount] = useState('100');
@@ -54,13 +73,14 @@ export function BulkDownloadModal({
   useEffect(() => {
     if (!open || phase !== 'setup') return;
     setSetupError('');
+    setDestination('local');
   }, [open, phase]);
 
   if (!open) return null;
 
   const isSetup = phase === 'setup';
   const isDownloading = phase === 'downloading';
-  const isConfirm = phase === 'confirm';
+  const isDone = phase === 'done';
   const isError = phase === 'error';
 
   const handleStart = () => {
@@ -71,10 +91,14 @@ export function BulkDownloadModal({
     }
 
     setSetupError('');
-    onStartDownload(parsed.downloadScope);
+    onStartDownload({
+      downloadScope: parsed.downloadScope,
+      destination,
+    });
   };
 
   const rangeSummary = formatDownloadScopeSummary(downloadScope);
+  const savedWhere = DESTINATION_LABELS[importDestination] || DESTINATION_LABELS.local;
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
@@ -88,22 +112,47 @@ export function BulkDownloadModal({
       <div
         role="dialog"
         aria-modal="true"
-        className="relative w-full max-w-lg rounded-3xl bg-white border border-slate-200 shadow-2xl overflow-hidden"
+        className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-3xl bg-white border border-slate-200 shadow-2xl"
       >
-        <div className="px-6 py-5 border-b border-slate-100">
+        <div className="px-6 py-5 border-b border-slate-100 sticky top-0 bg-white z-10">
           <h2 className="text-lg font-semibold text-slate-900">Pobieranie z Sellasist</h2>
-          <p className="text-xs text-slate-500 mt-1">
-            Limit bezpieczeństwa: maks. 150 żądań API / minutę (limit Sellasist: 300/min)
-          </p>
+          {isSetup && (
+            <p className="text-xs text-slate-500 mt-1">
+              Wybierz gdzie zapisać dane i zakres pobierania przed startem importu.
+            </p>
+          )}
         </div>
 
         <div className="px-6 py-6 space-y-5">
           {isSetup && (
             <>
-              <div className="space-y-3">
-                <p className="text-sm text-slate-600">
-                  Wybierz zakres zamówień do pobrania. Domyślnie pobierane są wszystkie dostępne
-                  rekordy (paginacja po 50 – bezpieczniej przy limicie czasu Netlify).
+              <div className="space-y-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Gdzie zapisać pobrane zamówienia
+                </p>
+                {IMPORT_DESTINATIONS.map((item) => (
+                  <label
+                    key={item.id}
+                    className="flex items-start gap-3 rounded-2xl border border-slate-200 p-4 cursor-pointer has-[:checked]:border-brand-primary has-[:checked]:ring-2 has-[:checked]:ring-brand-primary/15"
+                  >
+                    <input
+                      type="radio"
+                      name="import-destination"
+                      checked={destination === item.id}
+                      onChange={() => setDestination(item.id)}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      <span className="block text-sm font-semibold text-slate-900">{item.label}</span>
+                      <span className="block text-xs text-slate-500 mt-0.5">{item.desc}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Zakres pobierania
                 </p>
 
                 <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 cursor-pointer has-[:checked]:border-brand-primary has-[:checked]:ring-2 has-[:checked]:ring-brand-primary/15">
@@ -138,7 +187,7 @@ export function BulkDownloadModal({
                         Ostatnie X zamówień
                       </span>
                       <span className="block text-xs text-slate-500 mt-0.5">
-                        Pobierz najnowsze rekordy (offset 0, kolejne paczki w API Sellasist).
+                        Najnowsze rekordy (offset 0, kolejne paczki w API Sellasist).
                       </span>
                     </span>
 
@@ -180,7 +229,7 @@ export function BulkDownloadModal({
                         Zakres ID zamówień
                       </span>
                       <span className="block text-xs text-slate-500 mt-0.5">
-                        Pobierz zamówienia o ID od–do (włącznie). API Sellasist używa parametru{' '}
+                        ID od–do (włącznie). API używa parametru{' '}
                         <code className="text-[11px] bg-slate-100 px-1 rounded">from_id</code>.
                       </span>
                     </span>
@@ -258,8 +307,18 @@ export function BulkDownloadModal({
 
           {isDownloading && (
             <>
-              <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-xs text-slate-600">
-                Zakres: <strong>{rangeSummary}</strong>
+              <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-xs text-slate-600 space-y-1">
+                <p>
+                  Zakres: <strong>{rangeSummary}</strong>
+                </p>
+                <p>
+                  Zapis:{' '}
+                  <strong>
+                    {importDestination === 'server' && 'baza danych'}
+                    {importDestination === 'both' && 'bufor + baza danych'}
+                    {importDestination !== 'server' && importDestination !== 'both' && 'bufor lokalny'}
+                  </strong>
+                </p>
               </div>
 
               <div className="flex items-center gap-4">
@@ -290,6 +349,11 @@ export function BulkDownloadModal({
                 />
               </div>
 
+              <p className="text-[11px] text-slate-500 leading-relaxed rounded-xl border border-amber-100 bg-amber-50/80 px-3 py-2">
+                Limit bezpieczeństwa: maks. <strong>150 żądań API / minutę</strong> (limit
+                Sellasist: 300/min). Przy dużym imporcie import może trwać dłużej.
+              </p>
+
               <button
                 type="button"
                 onClick={onCancel}
@@ -300,46 +364,27 @@ export function BulkDownloadModal({
             </>
           )}
 
-          {isConfirm && (
+          {isDone && (
             <>
               <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-xs text-slate-600">
                 Zakres: <strong>{rangeSummary}</strong>
               </div>
-              <div className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4 text-sm text-emerald-900">
-                Pobrano <strong>{resultCount}</strong> zamówień w{' '}
-                <strong>{progress.packageNum}</strong> paczkach.
+              <div className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4 text-sm text-emerald-900 space-y-2">
+                <p>
+                  Pobrano <strong>{resultCount}</strong> zamówień w{' '}
+                  <strong>{progress.packageNum}</strong> paczkach.
+                </p>
+                <p>
+                  Zapisano w: <strong>{savedWhere}</strong>.
+                </p>
               </div>
-              <p className="text-sm text-slate-600">Co zrobić z pobranymi danymi?</p>
-              <div className="grid gap-2">
-                <button
-                  type="button"
-                  onClick={onSaveToDb}
-                  className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-brand-primary text-white px-4 py-3 text-sm font-semibold hover:opacity-90"
-                >
-                  <ButtonLabel icon={IconDatabase}>Zapisz w bazie lokalnej</ButtonLabel>
-                </button>
-                <button
-                  type="button"
-                  onClick={onSaveToServerDb}
-                  className="w-full inline-flex items-center justify-center gap-2 rounded-2xl border border-violet-200 bg-violet-50 text-violet-800 px-4 py-3 text-sm font-semibold hover:bg-violet-100"
-                >
-                  <ButtonLabel icon={IconDatabase}>Zapisz w bazie danych (serwer)</ButtonLabel>
-                </button>
-                <button
-                  type="button"
-                  onClick={onBufferOnly}
-                  className="w-full inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white text-slate-700 px-4 py-3 text-sm font-semibold hover:bg-slate-50"
-                >
-                  <ButtonLabel icon={IconEye}>Tylko wyświetl w buforze</ButtonLabel>
-                </button>
-                <button
-                  type="button"
-                  onClick={onSaveToBoth}
-                  className="w-full inline-flex items-center justify-center gap-2 rounded-2xl border border-brand-primary/30 bg-brand-primary/5 text-brand-primary px-4 py-3 text-sm font-semibold hover:bg-brand-primary/10"
-                >
-                  <ButtonLabel icon={IconLayers}>Zapisz w bazie i buforze</ButtonLabel>
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-brand-primary text-white px-4 py-3 text-sm font-semibold hover:opacity-90"
+              >
+                <ButtonLabel icon={IconX}>Zamknij</ButtonLabel>
+              </button>
             </>
           )}
 

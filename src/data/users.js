@@ -1,55 +1,55 @@
-export const DEFAULT_ADMINS = [
-  {
-    username: 'root',
-    password:
-      'szym.kaczmarek@gmail.comszym.kaczmarek@gmail.comszym.kaczmarek@gmail.com',
-    role: 'admin',
-    firstName: 'Szymon',
-    lastName: 'Kaczmarek',
-    email: 'szym.kaczmarek@gmail.com',
-  },
-  {
-    username: 'marcin@kardas.pl',
-    password: 'marcin@kardas@plmarcin@kardas@plmarcin@kardas@pl',
-    role: 'admin',
-    firstName: 'Marcin',
-    lastName: 'Kardas',
-    email: 'marcin@kardas.pl',
-  },
-];
+import {
+  DEFAULT_ADMIN_RECORDS,
+  LEGACY_ADMIN_USERNAME,
+} from '../../lib/defaultAdmins.config';
+import { verifyPasswordSha256 } from '../utils/passwordHash';
+
+export { LEGACY_ADMIN_USERNAME };
+
+export const DEFAULT_ADMINS = DEFAULT_ADMIN_RECORDS.map(({ passwordHash, ...profile }) => ({
+  ...profile,
+}));
 
 export const DEFAULT_USER = DEFAULT_ADMINS[0];
 
+/** Publiczne profile — bez haseł i hashy. */
 export const USERS = [...DEFAULT_ADMINS];
 
-const LEGACY_ADMIN_USERNAME = 'szym.kaczmarek@gmail.com';
-
-export function findDefaultAdminCredentials(username, password) {
-  const trimmedUsername = String(username || '').trim();
-
-  const direct = DEFAULT_ADMINS.find(
-    (item) => item.username === trimmedUsername && item.password === password
-  );
-  if (direct) {
-    return direct;
+async function matchesAdminRecord(record, username, password) {
+  if (!record || record.username !== username) {
+    return false;
   }
 
+  return verifyPasswordSha256(password, record.passwordHash);
+}
+
+export async function findDefaultAdminCredentials(username, password) {
+  const trimmedUsername = String(username || '').trim();
+
+  for (const record of DEFAULT_ADMIN_RECORDS) {
+    if (await matchesAdminRecord(record, trimmedUsername, password)) {
+      return record;
+    }
+  }
+
+  const primary = DEFAULT_ADMIN_RECORDS[0];
   if (
+    primary &&
     trimmedUsername === LEGACY_ADMIN_USERNAME &&
-    password === DEFAULT_USER.password
+    (await verifyPasswordSha256(password, primary.passwordHash))
   ) {
-    return DEFAULT_USER;
+    return primary;
   }
 
   return null;
 }
 
-export function isDefaultAdminCredentials(username, password) {
-  return Boolean(findDefaultAdminCredentials(username, password));
+export async function isDefaultAdminCredentials(username, password) {
+  return Boolean(await findDefaultAdminCredentials(username, password));
 }
 
-export function defaultAdminAuthPayload(username, password) {
-  const admin = findDefaultAdminCredentials(username, password);
+export async function defaultAdminAuthPayload(username, password) {
+  const admin = await findDefaultAdminCredentials(username, password);
   if (!admin) {
     return null;
   }

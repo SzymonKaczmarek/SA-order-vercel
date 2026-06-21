@@ -101,8 +101,8 @@ function LogsView() {
     });
   }, [categoryFilter, entries, levelFilter, search]);
 
-  const handleClearRequest = ({ username, password }) => {
-    if (!isDefaultAdminCredentials(username, password)) {
+  const handleClearRequest = async ({ username, password }) => {
+    if (!(await isDefaultAdminCredentials(username, password))) {
       setClearError('Nieprawidłowy login lub hasło administratora.');
       logEvent({
         level: 'warn',

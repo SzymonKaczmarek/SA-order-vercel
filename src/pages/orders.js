@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'gatsby';
 import { ApiRawPanel } from '../components/ApiRawPanel';
 import { BulkDownloadModal } from '../components/BulkDownloadModal';
 import { ExportCsvModal } from '../components/ExportCsvModal';
@@ -15,18 +14,17 @@ import { OrdersPagination } from '../components/OrdersPagination';
 import { OrdersSourceToggle } from '../components/OrdersSourceToggle';
 import { SyncStatusPanel } from '../components/SyncStatusPanel';
 import { ServerOrdersLoadOverlay } from '../components/ServerOrdersLoadOverlay';
+import { OrdersPageInitOverlay } from '../components/OrdersPageInitOverlay';
 import { SellasistConfigModal } from '../components/SellasistConfigModal';
 import { useAccessAccount } from '../context/AccessAccountContext';
 import {
-  clearOrdersCache,
   buildOrdersScopeKey,
   formatFetchedAt,
-  readOrdersCache,
-  writeOrdersCache,
 } from '../data/ordersLocalDb';
 import { getAccessAccountDisplayName } from '../data/accessAccounts';
 import { fetchSellasistOrders } from '../hooks/useSellasistApi';
 import {
+  appendOrdersToServerDb,
   clearOrdersFromServerDb,
   deleteOrdersFromServerDb,
   getOrdersByIdsFromServerDb,
@@ -35,6 +33,7 @@ import {
   resolveOrdersScopeFromDb,
   setOrdersToServerDb,
 } from '../hooks/useAppDbApi';
+import { useOrdersLocalStore } from '../hooks/useOrdersLocalStore';
 import { useSellasistConfig } from '../hooks/useSellasistConfig';
 import { downloadAllOrders } from '../utils/bulkOrderDownload';
 import { downloadOrdersCsv, getOrdersExportFilename } from '../utils/exportOrdersCsv';
@@ -46,9 +45,7 @@ import {
   hasActiveFilters,
 } from '../utils/filterOrders';
 import {
-  excludeOrdersByKeys,
   getOrderKey,
-  mergeOrders,
   pickOrdersByKeys,
 } from '../utils/orderSelection';
 
@@ -74,12 +71,6 @@ const HIDDEN_SERVER_LOAD_PROGRESS = {
   percent: 0,
 };
 
-const INITIAL_SERVER_LOAD_DIFF = {
-  loading: false,
-  localCount: 0,
-  missingCount: null,
-};
-
 function getConfigHint(config) {
   if (config?.useDemoData) return 'demo';
   return (config?.account || '').trim().toLowerCase();
@@ -88,33 +79,20 @@ function getConfigHint(config) {
 function OrdersView() {
   const { activeAccount, activeAccountId, ready: accountReady } = useAccessAccount();
   const { config, isConfigured, isDemoMode, loaded: configLoaded } = useSellasistConfig();
-  const [savedOrders, setSavedOrders] = useState([]);
   const [serverOrders, setServerOrders] = useState([]);
   const [serverOrdersTotal, setServerOrdersTotal] = useState(0);
   const [serverOrdersLoading, setServerOrdersLoading] = useState(false);
   const [serverSyncError, setServerSyncError] = useState('');
   const [serverMeta, setServerMeta] = useState({
     fetchedAt: null,
-    fetchedAtLabel: 'Brak zapisu na serwerze',
+    fetchedAtLabel: 'Brak zapisu w bazie danych',
   });
-  const [bufferOrders, setBufferOrders] = useState([]);
-  const [activeSource, setActiveSource] = useState('saved');
+  const [activeSource, setActiveSource] = useState('local');
   const [apiRaw, setApiRaw] = useState(null);
   const [apiMeta, setApiMeta] = useState(null);
   const [error, setError] = useState('');
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [selectedIds, setSelectedIds] = useState([]);
-  const [syncInfo, setSyncInfo] = useState({
-    fetchedAt: null,
-    fetchedAtLabel: 'Brak zapisu w bazie',
-    savedLocally: false,
-    cachedCount: 0,
-    accountLabel: '',
-  });
-  const [bufferMeta, setBufferMeta] = useState({
-    fetchedAt: null,
-    fetchedAtLabel: 'Bufor pusty',
-  });
   const [bulkModal, setBulkModal] = useState({
     open: false,
     phase: 'idle',
@@ -122,6 +100,7 @@ function OrdersView() {
     error: '',
     result: null,
     downloadScope: null,
+    importDestination: 'local',
   });
   const [configModalOpen, setConfigModalOpen] = useState(false);
   const [manageModalOpen, setManageModalOpen] = useState(false);
@@ -130,7 +109,8 @@ function OrdersView() {
   const [ordersPageSize, setOrdersPageSize] = useState(25);
   const [serverLoadPhase, setServerLoadPhase] = useState(null);
   const [serverLoadProgress, setServerLoadProgress] = useState(HIDDEN_SERVER_LOAD_PROGRESS);
-  const [serverLoadDiff, setServerLoadDiff] = useState(INITIAL_SERVER_LOAD_DIFF);
+  const [sourceSyncSummary, setSourceSyncSummary] = useState(null);
+  const [serverDbHintReady, setServerDbHintReady] = useState(false);
 
   const abortRef = useRef(null);
   const resolvedServerScopeKeyRef = useRef(null);
@@ -139,68 +119,59 @@ function OrdersView() {
   const serverLoadAcceptedRef = useRef(false);
   const serverLoadPhaseRef = useRef(null);
   const previousActiveAccountIdRef = useRef(null);
-  const pendingMissingKeysRef = useRef([]);
+  const serverDbHintRequestIdRef = useRef(0);
   const bulkDownloading = bulkModal.phase === 'downloading';
 
   serverLoadPhaseRef.current = serverLoadPhase;
 
-  const orders =
-    activeSource === 'saved'
-      ? savedOrders
-      : activeSource === 'server'
-        ? serverOrders
-        : bufferOrders;
+  const localStore = useOrdersLocalStore({
+    activeAccountId,
+    config,
+    isConfigured,
+    isDemoMode,
+    activeSource,
+    filters,
+    ordersPage,
+    ordersPageSize,
+  });
 
-  const applySavedCache = useCallback((entry) => {
-    if (!entry) return;
+  const {
+    localOrders,
+    localOrdersTotal,
+    localOrdersLoading,
+    syncInfo,
+    localCacheHydrated,
+    hydrateLocalStore,
+    loadLocalOrdersPage,
+    appendLocalBatch,
+    deleteLocalKeys,
+    clearLocal,
+    listLocalOrderIds,
+    getLocalOrdersByIds,
+    iterateLocalBatches,
+    getLocalScopeKey,
+    resetLocalHydration,
+    getLocalCount,
+  } = localStore;
 
-    setSavedOrders(entry.orders || []);
-    setSyncInfo({
-      fetchedAt: entry.fetchedAt,
-      fetchedAtLabel: formatFetchedAt(entry.fetchedAt),
-      savedLocally: true,
-      cachedCount: entry.count ?? (entry.orders?.length || 0),
-      accountLabel: entry.useDemoData
-        ? 'tryb demo'
-        : entry.account
-          ? `${entry.account}.sellasist.pl`
-          : '',
-    });
-  }, []);
-
-  const loadSavedFromCache = useCallback(() => {
-    if (!activeAccountId) return null;
-
-    if (!isConfigured) {
-      setSavedOrders([]);
-      setSyncInfo({
-        fetchedAt: null,
-        fetchedAtLabel: 'Brak zapisu w bazie',
-        savedLocally: false,
-        cachedCount: 0,
-        accountLabel: '',
-      });
-      return null;
-    }
-
-    const cached = readOrdersCache(activeAccountId, config);
-    if (cached) {
-      applySavedCache(cached);
-      setApiRaw(cached.raw ?? cached.orders ?? null);
-      setApiMeta(cached.meta ?? null);
-      return cached;
-    }
-
-    setSavedOrders([]);
-    setSyncInfo({
-      fetchedAt: null,
-      fetchedAtLabel: 'Brak zapisu w bazie',
-      savedLocally: false,
-      cachedCount: 0,
-      accountLabel: '',
-    });
+  const pageInitStep = useMemo(() => {
+    if (!localCacheHydrated) return 'local';
+    if (!serverDbHintReady) return 'server';
+    if (activeSource === 'local' && localOrdersLoading) return 'list';
     return null;
-  }, [activeAccountId, applySavedCache, config, isConfigured]);
+  }, [activeSource, localCacheHydrated, localOrdersLoading, serverDbHintReady]);
+
+  const showPageInitOverlay = Boolean(
+    isConfigured &&
+      accountReady &&
+      configLoaded &&
+      activeAccountId &&
+      pageInitStep &&
+      !serverLoadPhase &&
+      !bulkDownloading
+  );
+
+  const orders = activeSource === 'server' ? serverOrders : localOrders;
 
   const getServerScopeKey = useCallback(() => {
     if (resolvedServerScopeKeyRef.current) {
@@ -232,7 +203,7 @@ function OrdersView() {
         await clearOrdersFromServerDb(scopeKey);
         setServerMeta({
           fetchedAt: null,
-          fetchedAtLabel: 'Brak zapisu na serwerze',
+          fetchedAtLabel: 'Brak zapisu w bazie danych',
         });
         setServerSyncError('');
         return;
@@ -250,7 +221,9 @@ function OrdersView() {
   );
 
   const loadServerOrdersPage = useCallback(
-    async (page, size, scopeKeyOverride = null) => {
+    async (page, size, scopeKeyOverride = null, options = {}) => {
+      const preserveOverlay = options.preserveOverlay === true;
+
       if (!activeAccountId) {
         setServerOrders([]);
         setServerOrdersTotal(0);
@@ -259,7 +232,7 @@ function OrdersView() {
 
       const scopeKey = scopeKeyOverride || resolvedServerScopeKeyRef.current;
       if (!scopeKey) {
-        setServerSyncError('Brak powiązanego zapisu zamówień na serwerze.');
+        setServerSyncError('Brak powiązanego zapisu zamówień w bazie danych.');
         return 0;
       }
 
@@ -267,17 +240,20 @@ function OrdersView() {
       const offset = (safePage - 1) * size;
       setServerOrdersLoading(true);
       setServerSyncError('');
-      setServerLoadPhase('loading');
-      setServerLoadProgress((current) => ({
-        visible: true,
-        label: 'Pobieranie produktów z bazy Neon…',
-        page: safePage,
-        totalPages: Math.max(1, Math.ceil((serverKnownTotalRef.current || size) / size) || 1),
-        itemFrom: offset + 1,
-        itemTo: Math.min(offset + size, serverKnownTotalRef.current || offset + size),
-        totalItems: serverKnownTotalRef.current || current.totalItems || 0,
-        percent: 12,
-      }));
+
+      if (!preserveOverlay) {
+        setServerLoadPhase('loading');
+        setServerLoadProgress((current) => ({
+          visible: true,
+          label: 'Pobieranie produktów z bazy danych…',
+          page: safePage,
+          totalPages: Math.max(1, Math.ceil((serverKnownTotalRef.current || size) / size) || 1),
+          itemFrom: offset + 1,
+          itemTo: Math.min(offset + size, serverKnownTotalRef.current || offset + size),
+          totalItems: serverKnownTotalRef.current || current.totalItems || 0,
+          percent: 12,
+        }));
+      }
 
       try {
         const entry = await getOrdersFromServerDb(scopeKey, { offset, limit: size });
@@ -295,7 +271,7 @@ function OrdersView() {
           fetchedAt: entry?.fetchedAt || null,
           fetchedAtLabel: entry?.fetchedAt
             ? formatFetchedAt(entry.fetchedAt)
-            : 'Brak zapisu na serwerze',
+            : 'Brak zapisu w bazie danych',
         });
 
         if (entry?.raw) {
@@ -305,32 +281,36 @@ function OrdersView() {
           setApiMeta(entry.meta);
         }
 
-        setServerLoadProgress({
-          visible: true,
-          label:
-            total > 0
-              ? `Załadowano produkty ${itemFrom}–${itemTo} z ${total}`
-              : 'Brak produktów na serwerze',
-          page: safePage,
-          totalPages,
-          itemFrom,
-          itemTo,
-          totalItems: total,
-          percent: 100,
-        });
+        if (!preserveOverlay) {
+          setServerLoadProgress({
+            visible: true,
+            label:
+              total > 0
+                ? `Załadowano produkty ${itemFrom}–${itemTo} z ${total}`
+                : 'Brak produktów w bazie danych',
+            page: safePage,
+            totalPages,
+            itemFrom,
+            itemTo,
+            totalItems: total,
+            percent: 100,
+          });
 
-        window.setTimeout(() => {
-          setServerLoadPhase(null);
-          setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
-        }, 350);
+          window.setTimeout(() => {
+            setServerLoadPhase(null);
+            setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
+          }, 350);
+        }
 
         return total;
       } catch (err) {
         setServerOrders([]);
         setServerOrdersTotal(0);
-        setServerSyncError(err?.message || 'Nie udało się odczytać bazy serwerowej.');
-        setServerLoadPhase(null);
-        setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
+        setServerSyncError(err?.message || 'Nie udało się odczytać bazy danych.');
+        if (!preserveOverlay) {
+          setServerLoadPhase(null);
+          setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
+        }
         return 0;
       } finally {
         setServerOrdersLoading(false);
@@ -351,7 +331,7 @@ function OrdersView() {
       fetchedAt: resolved.fetchedAt || null,
       fetchedAtLabel: resolved.fetchedAt
         ? formatFetchedAt(resolved.fetchedAt)
-        : 'Brak zapisu na serwerze',
+        : 'Brak zapisu w bazie danych',
     });
     return true;
   }, []);
@@ -370,79 +350,150 @@ function OrdersView() {
       applyResolvedServerMeta(resolved);
       return resolved;
     } catch (err) {
-      setServerSyncError(err?.message || 'Nie udało się sprawdzić bazy serwerowej.');
+      setServerSyncError(err?.message || 'Nie udało się sprawdzić bazy danych.');
       return null;
     }
   }, [activeAccountId, applyResolvedServerMeta, config]);
 
-  const handleLoadAllFromServer = useCallback(async () => {
-    if (!resolvedServerScopeKeyRef.current) {
-      const resolved = await probeServerOrders();
-      if (!resolved) {
-        setServerLoadPhase(null);
-        return;
-      }
-    }
-
-    serverLoadAcceptedRef.current = true;
-    setActiveSource('server');
-    setOrdersPage(1);
-    lastLoadedServerPageRef.current = {
-      page: 0,
-      size: ordersPageSize,
-      scope: resolvedServerScopeKeyRef.current,
-    };
-    await loadServerOrdersPage(1, ordersPageSize, resolvedServerScopeKeyRef.current);
-    lastLoadedServerPageRef.current = {
-      page: 1,
-      size: ordersPageSize,
-      scope: resolvedServerScopeKeyRef.current,
-    };
-  }, [loadServerOrdersPage, ordersPageSize, probeServerOrders]);
-
-  const handleDeclineServerLoad = useCallback(() => {
-    setServerLoadPhase(null);
-    if (savedOrders.length > 0) {
-      setActiveSource('saved');
-    }
-  }, [savedOrders.length]);
-
-  const openServerLoadPrompt = useCallback(() => {
-    if (serverOrdersTotal <= 0) {
+  const refreshServerDbHint = useCallback(async () => {
+    if (!accountReady || !configLoaded || !activeAccountId) {
       return;
     }
-    setServerLoadPhase('confirm');
-  }, [serverOrdersTotal]);
+
+    if (serverLoadPhaseRef.current === 'loading') {
+      return;
+    }
+
+    const requestId = serverDbHintRequestIdRef.current + 1;
+    serverDbHintRequestIdRef.current = requestId;
+    setServerDbHintReady(false);
+
+    try {
+      const resolved = await probeServerOrders();
+      if (requestId !== serverDbHintRequestIdRef.current) {
+        return;
+      }
+
+      if (!resolved?.scopeKey || !(Number(resolved.total) > 0)) {
+        setSourceSyncSummary(null);
+        return;
+      }
+
+      const scopeKey = resolved.scopeKey;
+      const serverCount = Number(resolved.total) || 0;
+      let localCount = 0;
+      let missingInLocal = 0;
+      let missingInServer = 0;
+      let matchedCount = 0;
+
+      try {
+        const serverIds = await listOrderIdsFromServerDb(scopeKey);
+        if (requestId !== serverDbHintRequestIdRef.current) {
+          return;
+        }
+
+        const localIds = await listLocalOrderIds(scopeKey);
+        if (requestId !== serverDbHintRequestIdRef.current) {
+          return;
+        }
+
+        localCount = localIds.length;
+        const localKeys = new Set(localIds);
+        const serverKeys = new Set(serverIds);
+        missingInLocal = serverIds.filter((id) => !localKeys.has(id)).length;
+        missingInServer = localIds.filter((id) => !serverKeys.has(id)).length;
+        matchedCount = serverIds.filter((id) => localKeys.has(id)).length;
+      } catch (_e) {
+        localCount = localOrdersTotal;
+        missingInLocal = 0;
+        missingInServer = 0;
+        matchedCount = 0;
+      }
+
+      if (requestId !== serverDbHintRequestIdRef.current) {
+        return;
+      }
+
+      setSourceSyncSummary({
+        serverCount,
+        localCount,
+        matchedCount,
+        missingInLocal,
+        missingInServer,
+      });
+    } catch (_err) {
+      // zostaw poprzednie podsumowanie przy chwilowym błędzie API
+    } finally {
+      if (requestId === serverDbHintRequestIdRef.current) {
+        setServerDbHintReady(true);
+      }
+    }
+  }, [
+    accountReady,
+    activeAccountId,
+    configLoaded,
+    listLocalOrderIds,
+    localOrdersTotal,
+    probeServerOrders,
+  ]);
+
+  const showServerOrdersView = useCallback(
+    async ({ preserveOverlay = false } = {}) => {
+      let scopeKey = resolvedServerScopeKeyRef.current;
+      if (!scopeKey) {
+        const resolved = await probeServerOrders();
+        scopeKey = resolved?.scopeKey || null;
+      }
+
+      if (!scopeKey) {
+        return false;
+      }
+
+      const knownTotal = serverKnownTotalRef.current || serverOrdersTotal;
+      if (!(knownTotal > 0)) {
+        return false;
+      }
+
+      serverLoadAcceptedRef.current = true;
+      setActiveSource('server');
+
+      const last = lastLoadedServerPageRef.current;
+      if (
+        last.page === 1 &&
+        last.size === ordersPageSize &&
+        last.scope === scopeKey &&
+        serverOrders.length > 0
+      ) {
+        return true;
+      }
+
+      setOrdersPage(1);
+      lastLoadedServerPageRef.current = {
+        page: 0,
+        size: ordersPageSize,
+        scope: scopeKey,
+      };
+      await loadServerOrdersPage(1, ordersPageSize, scopeKey, { preserveOverlay });
+      lastLoadedServerPageRef.current = {
+        page: 1,
+        size: ordersPageSize,
+        scope: scopeKey,
+      };
+      return true;
+    },
+    [loadServerOrdersPage, ordersPageSize, probeServerOrders, serverOrders.length, serverOrdersTotal]
+  );
 
   const handleSourceChange = useCallback(
     (nextSource) => {
-      if (
-        nextSource === 'server' &&
-        serverOrdersTotal > 0 &&
-        !serverLoadAcceptedRef.current
-      ) {
-        openServerLoadPrompt();
+      setActiveSource(nextSource);
+      if (nextSource !== 'server') {
         return;
       }
-      setActiveSource(nextSource);
+
+      void showServerOrdersView({ preserveOverlay: false });
     },
-    [openServerLoadPrompt, serverOrdersTotal]
-  );
-
-  const mutateServerOrders = useCallback(
-    async (mutator, reloadPage = 1) => {
-      if (!activeAccountId) return;
-
-      const scopeKey = getServerScopeKey();
-      const full = await getOrdersFromServerDb(scopeKey);
-      const allOrders = Array.isArray(full?.orders) ? full.orders : [];
-      const nextOrders = mutator(allOrders);
-
-      await persistServerOrders(nextOrders);
-      setOrdersPage(reloadPage);
-      await loadServerOrdersPage(reloadPage, ordersPageSize, scopeKey);
-    },
-    [activeAccountId, getServerScopeKey, loadServerOrdersPage, ordersPageSize, persistServerOrders]
+    [showServerOrdersView]
   );
 
   const removeServerOrderKeys = useCallback(
@@ -475,114 +526,49 @@ function OrdersView() {
       setServerOrdersTotal(0);
       setServerOrders([]);
       setServerSyncError('');
-      setServerLoadDiff(INITIAL_SERVER_LOAD_DIFF);
-      pendingMissingKeysRef.current = [];
-      setBufferOrders([]);
-      setBufferMeta({ fetchedAt: null, fetchedAtLabel: 'Bufor pusty' });
+      setSourceSyncSummary(null);
+      setServerDbHintReady(false);
+      serverDbHintRequestIdRef.current += 1;
+      resetLocalHydration();
       setSelectedIds([]);
       setFilters(EMPTY_FILTERS);
       setError('');
       setOrdersPage(1);
     }
 
-    loadSavedFromCache();
-  }, [accountReady, configLoaded, activeAccountId, loadSavedFromCache]);
+    void hydrateLocalStore();
+  }, [accountReady, configLoaded, activeAccountId, hydrateLocalStore, resetLocalHydration]);
 
   useEffect(() => {
-    if (!accountReady || !configLoaded || !activeAccountId) return;
-    if (serverLoadAcceptedRef.current) return;
-    if (
-      serverLoadPhaseRef.current === 'confirm' ||
-      serverLoadPhaseRef.current === 'loading'
-    ) {
+    if (!accountReady || !configLoaded || !activeAccountId || !localCacheHydrated) {
       return;
     }
 
-    let cancelled = false;
-
-    (async () => {
-      const resolved = await probeServerOrders();
-      if (cancelled) return;
-
-      if (resolved?.scopeKey && Number(resolved.total) > 0) {
-        setServerLoadPhase('confirm');
-        return;
-      }
-
-      if (isConfigured && readOrdersCache(activeAccountId, config)) {
-        setActiveSource('saved');
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    refreshServerDbHint();
   }, [
     accountReady,
     activeAccountId,
-    config,
+    activeSource,
     configLoaded,
-    isConfigured,
-    probeServerOrders,
+    localCacheHydrated,
+    localOrdersTotal,
+    refreshServerDbHint,
   ]);
 
   useEffect(() => {
-    if (serverLoadPhase !== 'confirm') {
-      setServerLoadDiff(INITIAL_SERVER_LOAD_DIFF);
-      pendingMissingKeysRef.current = [];
-      return undefined;
+    if (!manageModalOpen) {
+      return;
     }
 
-    const scopeKey = resolvedServerScopeKeyRef.current;
-    if (!scopeKey) {
-      return undefined;
-    }
-
-    let cancelled = false;
-    setServerLoadDiff({
-      loading: true,
-      localCount: savedOrders.length,
-      missingCount: null,
-    });
-
-    (async () => {
-      try {
-        const serverIds = await listOrderIdsFromServerDb(scopeKey);
-        if (cancelled) return;
-
-        const localKeys = new Set(savedOrders.map(getOrderKey).filter(Boolean));
-        const missingKeys = serverIds.filter((id) => !localKeys.has(id));
-        pendingMissingKeysRef.current = missingKeys;
-        setServerLoadDiff({
-          loading: false,
-          localCount: savedOrders.length,
-          missingCount: missingKeys.length,
-        });
-      } catch (_err) {
-        if (cancelled) return;
-        pendingMissingKeysRef.current = [];
-        setServerLoadDiff({
-          loading: false,
-          localCount: savedOrders.length,
-          missingCount: null,
-        });
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [savedOrders, serverLoadPhase]);
+    refreshServerDbHint();
+  }, [manageModalOpen, refreshServerDbHint]);
 
   useEffect(() => {
     if (!serverLoadAcceptedRef.current || activeSource !== 'server') return;
 
     const scopeKey = resolvedServerScopeKeyRef.current;
     if (!scopeKey) return;
-    if (
-      serverLoadPhaseRef.current === 'confirm' ||
-      serverLoadPhaseRef.current === 'loading'
-    ) {
+    if (serverLoadPhaseRef.current === 'loading') {
       return;
     }
 
@@ -599,183 +585,184 @@ function OrdersView() {
     loadServerOrdersPage(ordersPage, ordersPageSize, scopeKey);
   }, [activeSource, loadServerOrdersPage, ordersPage, ordersPageSize]);
 
-  const updateSavedOrders = useCallback(
-    (nextOrders) => {
-      if (!activeAccountId) return;
-
-      setSavedOrders(nextOrders);
-
-      if (nextOrders.length === 0) {
-        clearOrdersCache(activeAccountId, config);
-        setSyncInfo({
-          fetchedAt: null,
-          fetchedAtLabel: 'Brak zapisu w bazie',
-          savedLocally: false,
-          cachedCount: 0,
-          accountLabel: '',
-        });
-        return;
-      }
-
-      const saved = writeOrdersCache(activeAccountId, config, {
-        orders: nextOrders,
-        raw: nextOrders,
-        meta: apiMeta,
-      });
-      if (saved) {
-        applySavedCache(saved);
-      }
-    },
-    [activeAccountId, apiMeta, applySavedCache, config]
-  );
-
-  const handleLoadMissingFromServer = useCallback(async () => {
-    if (!resolvedServerScopeKeyRef.current) {
-      const resolved = await probeServerOrders();
-      if (!resolved) {
-        setServerLoadPhase(null);
-        return;
-      }
+  const resolveServerScopeKey = useCallback(async () => {
+    if (resolvedServerScopeKeyRef.current) {
+      return resolvedServerScopeKeyRef.current;
     }
 
-    setServerOrdersLoading(true);
-    setServerSyncError('');
-    setServerLoadPhase('loading');
-    setServerLoadProgress({
-      visible: true,
-      label: 'Porównywanie z lokalną bazą…',
-      page: 1,
-      totalPages: 1,
-      itemFrom: 0,
-      itemTo: 0,
-      totalItems: serverKnownTotalRef.current || 0,
-      percent: 20,
-    });
+    const resolved = await probeServerOrders();
+    return resolved?.scopeKey || null;
+  }, [probeServerOrders]);
 
-    try {
-      let missingKeys = pendingMissingKeysRef.current;
-      if (!Array.isArray(missingKeys) || missingKeys.length === 0) {
-        const serverIds = await listOrderIdsFromServerDb(resolvedServerScopeKeyRef.current);
-        const localKeys = new Set(savedOrders.map(getOrderKey).filter(Boolean));
-        missingKeys = serverIds.filter((id) => !localKeys.has(id));
+  const syncMissingToLocal = useCallback(
+    async (onProgress) => {
+      const scopeKey = await resolveServerScopeKey();
+      if (!scopeKey) {
+        throw new Error('Brak danych w bazie.');
       }
+
+      onProgress?.('Porównywanie bufora z bazą danych…');
+      const serverIds = await listOrderIdsFromServerDb(scopeKey);
+      const localIds = await listLocalOrderIds(scopeKey);
+      const localKeys = new Set(localIds);
+      const missingKeys = serverIds.filter((id) => !localKeys.has(id));
 
       if (missingKeys.length === 0) {
-        setError('Brak nowych produktów — lokalna baza zawiera już wszystko z Neon.');
-        setServerLoadPhase(null);
-        setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
-        if (savedOrders.length > 0) {
-          setActiveSource('saved');
-        }
-        return;
+        return { added: 0 };
       }
 
-      setServerLoadProgress((current) => ({
-        ...current,
-        label: `Pobieranie ${missingKeys.length} brakujących produktów…`,
-        percent: 45,
-      }));
-
-      const missing = await getOrdersByIdsFromServerDb(
-        resolvedServerScopeKeyRef.current,
-        missingKeys
-      );
-
+      onProgress?.(`Pobieranie ${missingKeys.length} brakujących produktów…`);
+      const missing = await getOrdersByIdsFromServerDb(scopeKey, missingKeys);
       if (missing.length === 0) {
-        setError('Nie udało się pobrać brakujących produktów z bazy.');
-        setServerLoadPhase(null);
-        setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
-        return;
+        throw new Error('Nie udało się pobrać brakujących produktów z bazy danych.');
       }
 
-      setServerLoadProgress((current) => ({
-        ...current,
-        label: `Dopisywanie ${missing.length} brakujących produktów…`,
-        percent: 70,
-      }));
-
-      const merged = mergeOrders(savedOrders, missing);
-      updateSavedOrders(merged);
-      pendingMissingKeysRef.current = [];
-      setActiveSource('saved');
-      setServerLoadProgress({
-        visible: true,
-        label: `Dopisano ${missing.length} produktów do lokalnej bazy`,
-        page: 1,
-        totalPages: 1,
-        itemFrom: 1,
-        itemTo: missing.length,
-        totalItems: missing.length,
-        percent: 100,
-      });
-
-      window.setTimeout(() => {
-        setServerLoadPhase(null);
-        setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
-      }, 450);
-    } catch (err) {
-      setServerSyncError(err?.message || 'Nie udało się załadować różnicówki.');
-      setServerLoadPhase(null);
-      setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
-    } finally {
-      setServerOrdersLoading(false);
-    }
-  }, [probeServerOrders, savedOrders, updateSavedOrders]);
-
-  const updateServerOrders = useCallback(
-    async (nextOrders) => {
-      if (!activeAccountId) return;
-      try {
-        const scopeKey = getServerScopeKey();
-        serverLoadAcceptedRef.current = true;
-        await persistServerOrders(nextOrders);
-        serverKnownTotalRef.current = nextOrders.length;
-        setServerOrdersTotal(nextOrders.length);
-        resolvedServerScopeKeyRef.current = scopeKey;
-        setOrdersPage(1);
-        lastLoadedServerPageRef.current = { page: 0, size: ordersPageSize, scope: scopeKey };
-        await loadServerOrdersPage(1, ordersPageSize, scopeKey);
-        lastLoadedServerPageRef.current = { page: 1, size: ordersPageSize, scope: scopeKey };
-      } catch (err) {
-        setServerSyncError(err?.message || 'Nie udało się zapisać na serwerze.');
-        throw err;
-      }
+      onProgress?.(`Dopisywanie ${missing.length} produktów do bufora…`);
+      await appendLocalBatch(missing, { fetchedAt: new Date().toISOString() });
+      await loadLocalOrdersPage(1, ordersPageSize, scopeKey);
+      await refreshServerDbHint();
+      return { added: missing.length };
     },
-    [activeAccountId, getServerScopeKey, loadServerOrdersPage, ordersPageSize, persistServerOrders]
+    [
+      appendLocalBatch,
+      listLocalOrderIds,
+      loadLocalOrdersPage,
+      ordersPageSize,
+      refreshServerDbHint,
+      resolveServerScopeKey,
+    ]
   );
+
+  const syncMissingToServer = useCallback(
+    async (onProgress) => {
+      const localScopeKey = getLocalScopeKey();
+      if (!activeAccountId || !localScopeKey) {
+        throw new Error('Brak bufora lokalnego.');
+      }
+
+      const serverScopeKey = (await resolveServerScopeKey()) || getServerScopeKey();
+      if (!serverScopeKey) {
+        throw new Error('Brak danych w bazie.');
+      }
+
+      onProgress?.('Porównywanie bazy z buforem lokalnym…');
+      const serverIds = await listOrderIdsFromServerDb(serverScopeKey);
+      const localIds = await listLocalOrderIds(localScopeKey);
+      const serverKeys = new Set(serverIds);
+      const missingKeys = localIds.filter((id) => !serverKeys.has(id));
+
+      if (missingKeys.length === 0) {
+        return { added: 0 };
+      }
+
+      let added = 0;
+      const batchSize = 200;
+      serverLoadAcceptedRef.current = true;
+
+      for (let offset = 0; offset < missingKeys.length; offset += batchSize) {
+        const chunk = missingKeys.slice(offset, offset + batchSize);
+        onProgress?.(
+          `Dopisywanie do bazy danych… ${Math.min(offset + chunk.length, missingKeys.length)} / ${missingKeys.length}`
+        );
+        const batch = await getLocalOrdersByIds(chunk, localScopeKey);
+        if (!batch.length) {
+          continue;
+        }
+
+        await appendOrdersToServerDb(serverScopeKey, batch, buildServerPayload(batch));
+        added += batch.length;
+      }
+
+      await probeServerOrders();
+      await refreshServerDbHint();
+      return { added };
+    },
+    [
+      activeAccountId,
+      buildServerPayload,
+      getLocalOrdersByIds,
+      getLocalScopeKey,
+      getServerScopeKey,
+      listLocalOrderIds,
+      probeServerOrders,
+      refreshServerDbHint,
+      resolveServerScopeKey,
+    ]
+  );
+
+  const syncUnifyBoth = useCallback(
+    async (onProgress) => {
+      const localResult = await syncMissingToLocal(onProgress);
+      const serverResult = await syncMissingToServer(onProgress);
+      return {
+        addedLocal: localResult.added,
+        addedServer: serverResult.added,
+      };
+    },
+    [syncMissingToLocal, syncMissingToServer]
+  );
+
+  const appendLocalOrdersToServer = useCallback(async (onProgress) => {
+    const localScopeKey = getLocalScopeKey();
+    if (!activeAccountId || !localScopeKey) {
+      return;
+    }
+
+    const count = await getLocalCount(localScopeKey);
+    if (!count) {
+      return;
+    }
+
+    onProgress?.('Przenoszenie bufora do bazy danych…');
+    const serverScopeKey = getServerScopeKey();
+    serverLoadAcceptedRef.current = true;
+
+    await iterateLocalBatches(localScopeKey, 500, async (batch) => {
+      await appendOrdersToServerDb(serverScopeKey, batch, buildServerPayload(batch));
+    });
+
+    const resolved = await probeServerOrders();
+    if (resolved?.scopeKey) {
+      resolvedServerScopeKeyRef.current = resolved.scopeKey;
+      serverKnownTotalRef.current = Number(resolved.total) || count;
+      setServerOrdersTotal(Number(resolved.total) || count);
+    }
+
+    setOrdersPage(1);
+    lastLoadedServerPageRef.current = {
+      page: 0,
+      size: ordersPageSize,
+      scope: serverScopeKey,
+    };
+    await loadServerOrdersPage(1, ordersPageSize, serverScopeKey);
+    lastLoadedServerPageRef.current = {
+      page: 1,
+      size: ordersPageSize,
+      scope: serverScopeKey,
+    };
+    setActiveSource('server');
+    await refreshServerDbHint();
+  }, [
+    activeAccountId,
+    buildServerPayload,
+    getLocalScopeKey,
+    getServerScopeKey,
+    iterateLocalBatches,
+    loadServerOrdersPage,
+    ordersPageSize,
+    probeServerOrders,
+    refreshServerDbHint,
+  ]);
 
   useEffect(() => {
     setSelectedIds([]);
   }, [activeSource]);
 
-  const clearBuffer = useCallback(() => {
-    setBufferOrders([]);
-    setBufferMeta({
-      fetchedAt: null,
-      fetchedAtLabel: 'Bufor pusty',
-    });
-    setActiveSource((current) => (current === 'buffer' ? 'saved' : current));
-  }, []);
-
-  const clearDatabase = useCallback(() => {
-    if (!activeAccountId) return;
-
-    clearOrdersCache(activeAccountId, config);
-    setSavedOrders([]);
-    setSyncInfo({
-      fetchedAt: null,
-      fetchedAtLabel: 'Brak zapisu w bazie',
-      savedLocally: false,
-      cachedCount: 0,
-      accountLabel: '',
-    });
-    setActiveSource((current) => {
-      if (current === 'saved' && bufferOrders.length > 0) {
-        return 'buffer';
-      }
-      return current;
-    });
-  }, [activeAccountId, bufferOrders.length, config]);
+  const clearLocalStore = useCallback(async () => {
+    await clearLocal();
+    setActiveSource((current) => (current === 'local' ? 'server' : current));
+    await refreshServerDbHint();
+  }, [clearLocal, refreshServerDbHint]);
 
   const clearServerDatabase = useCallback(async () => {
     if (!activeAccountId) return;
@@ -785,113 +772,63 @@ function OrdersView() {
       setServerOrdersTotal(0);
       setOrdersPage(1);
       setActiveSource((current) => {
-        if (current === 'server' && bufferOrders.length > 0) return 'buffer';
-        if (current === 'server' && savedOrders.length > 0) return 'saved';
+        if (current === 'server' && localOrdersTotal > 0) {
+          return 'local';
+        }
         return current;
       });
+      await refreshServerDbHint();
     } catch (err) {
-      setServerSyncError(err?.message || 'Nie udało się wyczyścić bazy serwerowej.');
+      setServerSyncError(err?.message || 'Nie udało się wyczyścić bazy danych.');
       throw err;
     }
-  }, [activeAccountId, bufferOrders.length, persistServerOrders, savedOrders.length]);
+  }, [activeAccountId, localOrdersTotal, persistServerOrders, refreshServerDbHint]);
 
-  const moveSavedToBuffer = useCallback(() => {
-    if (savedOrders.length === 0 || !activeAccountId) return;
-
-    const fetchedAt = new Date().toISOString();
-    const ordersCopy = [...savedOrders];
-
-    setBufferOrders(ordersCopy);
-    setBufferMeta({
-      fetchedAt,
-      fetchedAtLabel: formatFetchedAt(fetchedAt),
-    });
-    clearOrdersCache(activeAccountId, config);
-    setSavedOrders([]);
-    setSyncInfo({
-      fetchedAt: null,
-      fetchedAtLabel: 'Brak zapisu w bazie',
-      savedLocally: false,
-      cachedCount: 0,
-      accountLabel: '',
-    });
-    setApiRaw(ordersCopy);
-    setActiveSource('buffer');
-  }, [activeAccountId, config, savedOrders]);
-
-  const moveBufferToSaved = useCallback(() => {
-    if (bufferOrders.length === 0 || !activeAccountId) return;
-
-    const payload = {
-      orders: bufferOrders,
-      raw: apiRaw ?? bufferOrders,
-      meta: apiMeta,
-    };
-    const saved = writeOrdersCache(activeAccountId, config, payload);
-
-    setSavedOrders(bufferOrders);
-    if (saved) {
-      applySavedCache(saved);
-    }
-    setBufferOrders([]);
-    setBufferMeta({
-      fetchedAt: null,
-      fetchedAtLabel: 'Bufor pusty',
-    });
-    setActiveSource('saved');
-  }, [activeAccountId, apiMeta, apiRaw, applySavedCache, bufferOrders, config]);
-
-  const moveServerToBuffer = useCallback(async () => {
+  const moveServerToLocal = useCallback(async (onProgress) => {
     if (serverOrdersTotal === 0 || !activeAccountId) return;
 
+    onProgress?.('Pobieranie danych z bazy…');
     const scopeKey = getServerScopeKey();
     const full = await getOrdersFromServerDb(scopeKey);
     const allOrders = Array.isArray(full?.orders) ? full.orders : [];
     if (allOrders.length === 0) return;
 
-    const fetchedAt = new Date().toISOString();
-    setBufferOrders(allOrders);
-    setBufferMeta({
-      fetchedAt,
-      fetchedAtLabel: formatFetchedAt(fetchedAt),
-    });
-    setApiRaw(full?.raw ?? allOrders);
-    setActiveSource('buffer');
-  }, [activeAccountId, getServerScopeKey, serverOrdersTotal]);
-
-  const moveBufferToServer = useCallback(async () => {
-    if (!activeAccountId || bufferOrders.length === 0) return;
-    await updateServerOrders(bufferOrders);
-    setActiveSource('server');
-  }, [activeAccountId, bufferOrders, updateServerOrders]);
-
-  const moveSavedToServer = useCallback(async () => {
-    if (!activeAccountId || savedOrders.length === 0) return;
-    await updateServerOrders(savedOrders);
-    setActiveSource('server');
-  }, [activeAccountId, savedOrders, updateServerOrders]);
-
-  const moveServerToSaved = useCallback(async () => {
-    if (!activeAccountId || serverOrdersTotal === 0) return;
-
-    const scopeKey = getServerScopeKey();
-    const full = await getOrdersFromServerDb(scopeKey);
-    const allOrders = Array.isArray(full?.orders) ? full.orders : [];
-    if (allOrders.length === 0) return;
-
-    const payload = {
-      orders: allOrders,
-      raw: full?.raw ?? apiRaw ?? allOrders,
+    await appendLocalBatch(allOrders, {
+      replace: true,
+      fetchedAt: new Date().toISOString(),
       meta: full?.meta ?? apiMeta,
-    };
-    const saved = writeOrdersCache(activeAccountId, config, payload);
-
-    setSavedOrders(allOrders);
-    if (saved) {
-      applySavedCache(saved);
+      raw: full?.raw ?? apiRaw,
+    });
+    if (full?.raw) {
+      setApiRaw(full.raw);
     }
-    setActiveSource('saved');
-  }, [activeAccountId, apiMeta, apiRaw, applySavedCache, getServerScopeKey, serverOrdersTotal]);
+    if (full?.meta) {
+      setApiMeta(full.meta);
+    }
+    setActiveSource('local');
+    await loadLocalOrdersPage(1, ordersPageSize);
+    await refreshServerDbHint();
+  }, [
+    activeAccountId,
+    apiMeta,
+    apiRaw,
+    appendLocalBatch,
+    getServerScopeKey,
+    loadLocalOrdersPage,
+    ordersPageSize,
+    refreshServerDbHint,
+    serverOrdersTotal,
+  ]);
+
+  const moveLocalToServer = useCallback(
+    async (onProgress) => {
+      if (!activeAccountId || localOrdersTotal === 0) {
+        return;
+      }
+      await appendLocalOrdersToServer(onProgress);
+    },
+    [activeAccountId, appendLocalOrdersToServer, localOrdersTotal]
+  );
 
   const removeFromSelection = useCallback((keys) => {
     const keySet = new Set(Array.isArray(keys) ? keys : [keys]);
@@ -903,38 +840,31 @@ function OrdersView() {
       const keySet = new Set(Array.isArray(keys) ? keys : [keys]);
       if (keySet.size === 0) return;
 
-      if (activeSource === 'saved') {
-        updateSavedOrders(excludeOrdersByKeys(savedOrders, keySet));
-      }
-
-      if (activeSource === 'buffer') {
-        setBufferOrders((current) => excludeOrdersByKeys(current, keySet));
+      if (activeSource === 'local') {
+        deleteLocalKeys([...keySet]).catch((err) => {
+          setError(err?.message || 'Nie udało się usunąć zamówień z bufora.');
+        });
       }
 
       if (activeSource === 'server') {
         removeServerOrderKeys([...keySet], ordersPage).catch(
           (err) => {
-            setServerSyncError(err?.message || 'Nie udało się usunąć zamówień na serwerze.');
+            setServerSyncError(err?.message || 'Nie udało się usunąć zamówień w bazie danych.');
           }
         );
       }
 
       removeFromSelection([...keySet]);
     },
-    [activeSource, ordersPage, removeFromSelection, removeServerOrderKeys, savedOrders, updateSavedOrders]
+    [activeSource, deleteLocalKeys, ordersPage, removeFromSelection, removeServerOrderKeys]
   );
 
-  const moveSelectedToSaved = useCallback(() => {
+  const moveSelectedToLocal = useCallback(async () => {
     const keySet = new Set(selectedIds);
     const selected = pickOrdersByKeys(orders, keySet);
     if (selected.length === 0) return;
 
-    const nextSaved = mergeOrders(savedOrders, selected);
-    updateSavedOrders(nextSaved);
-
-    if (activeSource === 'buffer') {
-      setBufferOrders((current) => excludeOrdersByKeys(current, keySet));
-    }
+    await appendLocalBatch(selected);
 
     if (activeSource === 'server') {
       removeServerOrderKeys([...keySet], ordersPage).catch((err) => {
@@ -943,49 +873,57 @@ function OrdersView() {
     }
 
     setSelectedIds([]);
-    setActiveSource('saved');
+    setActiveSource('local');
+    await loadLocalOrdersPage(ordersPage, ordersPageSize);
   }, [
     activeSource,
+    appendLocalBatch,
+    loadLocalOrdersPage,
     orders,
     ordersPage,
+    ordersPageSize,
     removeServerOrderKeys,
-    savedOrders,
     selectedIds,
-    updateSavedOrders,
   ]);
 
-  const moveSelectedToBuffer = useCallback(() => {
+  const moveSelectedToServer = useCallback(async () => {
     const keySet = new Set(selectedIds);
     const selected = pickOrdersByKeys(orders, keySet);
-    if (selected.length === 0) return;
+    if (selected.length === 0 || !activeAccountId) return;
 
-    const fetchedAt = new Date().toISOString();
-    setBufferOrders((current) => mergeOrders(current, selected));
-    setBufferMeta({
-      fetchedAt,
-      fetchedAtLabel: formatFetchedAt(fetchedAt),
-    });
-
-    if (activeSource === 'saved') {
-      updateSavedOrders(excludeOrdersByKeys(savedOrders, keySet));
+    let serverScopeKey = getServerScopeKey();
+    if (!resolvedServerScopeKeyRef.current) {
+      const resolved = await probeServerOrders();
+      serverScopeKey = resolved?.scopeKey || serverScopeKey;
+    }
+    if (!serverScopeKey) {
+      setServerSyncError('Brak powiązanej bazy danych dla tego konta.');
+      return;
     }
 
-    if (activeSource === 'server') {
-      removeServerOrderKeys([...keySet], ordersPage).catch((err) => {
-        setServerSyncError(err?.message || 'Nie udało się przenieść zamówień.');
-      });
+    try {
+      serverLoadAcceptedRef.current = true;
+      await appendOrdersToServerDb(serverScopeKey, selected, buildServerPayload(selected));
+      await deleteLocalKeys([...keySet]);
+      await probeServerOrders();
+      await refreshServerDbHint();
+      setSelectedIds([]);
+      await loadLocalOrdersPage(ordersPage, ordersPageSize);
+    } catch (err) {
+      setServerSyncError(err?.message || 'Nie udało się przenieść zamówień do bazy danych.');
     }
-
-    setSelectedIds([]);
-    setActiveSource('buffer');
   }, [
-    activeSource,
+    activeAccountId,
+    buildServerPayload,
+    deleteLocalKeys,
+    getServerScopeKey,
+    loadLocalOrdersPage,
     orders,
     ordersPage,
-    removeServerOrderKeys,
-    savedOrders,
+    ordersPageSize,
+    probeServerOrders,
+    refreshServerDbHint,
     selectedIds,
-    updateSavedOrders,
   ]);
 
   const openBulkDownload = useCallback(() => {
@@ -998,23 +936,31 @@ function OrdersView() {
       error: '',
       result: null,
       downloadScope: null,
+      importDestination: 'local',
     });
     setError('');
   }, [isConfigured]);
 
   const runBulkDownload = useCallback(
-    async (downloadScope) => {
+    async ({ downloadScope, destination = 'local' }) => {
       if (!isConfigured) return;
+
+      const savesLocal = destination === 'local' || destination === 'both';
+      const savesServer = destination === 'server' || destination === 'both';
 
       abortRef.current = new AbortController();
       const importStartedAt = new Date().toISOString();
 
-      setBufferOrders([]);
-      setBufferMeta({
-        fetchedAt: importStartedAt,
-        fetchedAtLabel: formatFetchedAt(importStartedAt),
-      });
-      setActiveSource('buffer');
+      if (savesLocal) {
+        await clearLocal();
+      }
+      if (savesServer && activeAccountId) {
+        await persistServerOrders([]);
+        serverLoadAcceptedRef.current = true;
+      }
+
+      setActiveSource(destination === 'server' ? 'server' : 'local');
+      setOrdersPage(1);
 
       setBulkModal({
         open: true,
@@ -1023,6 +969,7 @@ function OrdersView() {
         error: '',
         result: null,
         downloadScope,
+        importDestination: destination,
       });
       setError('');
 
@@ -1031,18 +978,33 @@ function OrdersView() {
         category: 'orders',
         action: 'orders.import.start',
         message: 'Rozpoczęto import zamówień z Sellasist',
-        details: { downloadScope },
+        details: { downloadScope, destination },
       });
 
-      const appendBatchToBuffer = ({ orders, meta, apiRaw: batchApiRaw }) => {
-        setBufferOrders(orders);
-        setApiRaw(batchApiRaw ?? orders);
-        if (meta) setApiMeta(meta);
-        setBufferMeta({
-          fetchedAt: importStartedAt,
-          fetchedAtLabel: formatFetchedAt(importStartedAt),
-        });
-        setActiveSource('buffer');
+      const appendBatchToStore = async ({ batch, meta, apiRaw: batchApiRaw }) => {
+        if (savesLocal) {
+          await appendLocalBatch(batch, {
+            fetchedAt: importStartedAt,
+            meta,
+            raw: batchApiRaw,
+          });
+        }
+
+        if (savesServer && activeAccountId) {
+          const serverScopeKey = getServerScopeKey();
+          await appendOrdersToServerDb(serverScopeKey, batch, buildServerPayload(batch));
+        }
+
+        if (batchApiRaw) {
+          setApiRaw(batchApiRaw);
+        }
+        if (meta) {
+          setApiMeta(meta);
+        }
+
+        if (savesLocal) {
+          await loadLocalOrdersPage(1, ordersPageSize);
+        }
       };
 
       try {
@@ -1053,7 +1015,7 @@ function OrdersView() {
           {
             signal: abortRef.current.signal,
             downloadScope,
-            onBatch: appendBatchToBuffer,
+            onBatch: appendBatchToStore,
             onProgress: (progress) => {
               setBulkModal((current) => ({
                 ...current,
@@ -1063,11 +1025,37 @@ function OrdersView() {
           }
         );
 
+        if (savesServer && activeAccountId) {
+          const serverScopeKey = getServerScopeKey();
+          await probeServerOrders();
+          lastLoadedServerPageRef.current = {
+            page: 0,
+            size: ordersPageSize,
+            scope: serverScopeKey,
+          };
+          await loadServerOrdersPage(1, ordersPageSize, serverScopeKey);
+          lastLoadedServerPageRef.current = {
+            page: 1,
+            size: ordersPageSize,
+            scope: serverScopeKey,
+          };
+        }
+
+        if (destination === 'server') {
+          setActiveSource('server');
+        } else {
+          setActiveSource('local');
+          await loadLocalOrdersPage(1, ordersPageSize);
+        }
+
+        await refreshServerDbHint();
+
         setBulkModal((current) => ({
           ...current,
-          phase: 'confirm',
+          phase: 'done',
           result,
           downloadScope,
+          importDestination: destination,
           progress: {
             ...current.progress,
             packageNum: result.packages,
@@ -1077,14 +1065,16 @@ function OrdersView() {
             remainingOrders: '0',
           },
         }));
+
         logEvent({
           level: 'info',
           category: 'orders',
           action: 'orders.import.success',
-          message: `Import zakończony: ${result.orders?.length || 0} zamówień`,
+          message: `Import zakończony: ${result.count || 0} zamówień`,
           details: {
             downloadScope,
-            count: result.orders?.length || 0,
+            destination,
+            count: result.count || 0,
             packages: result.packages,
           },
         });
@@ -1095,27 +1085,49 @@ function OrdersView() {
             category: 'orders',
             action: 'orders.import.cancelled',
             message: 'Import zamówień anulowany',
-            details: { downloadScope },
+            details: { downloadScope, destination },
           });
           return;
         }
+
+        const savedWhere =
+          savesLocal && savesServer
+            ? 'buforze lokalnym i bazie danych'
+            : savesServer
+              ? 'bazie danych'
+              : 'buforze lokalnym';
 
         logEvent({
           level: 'error',
           category: 'orders',
           action: 'orders.import.error',
           message: 'Błąd importu zamówień',
-          details: { downloadScope, error: err.message },
+          details: { downloadScope, destination, error: err.message },
         });
 
         setBulkModal((current) => ({
           ...current,
           phase: 'error',
-          error: `${err.message || 'Nie udało się pobrać zamówień.'} Pobrane do tej pory zamówienia są w buforze.`,
+          error: `${err.message || 'Nie udało się pobrać zamówień.'} Pobrane do tej pory zamówienia są w ${savedWhere}.`,
         }));
       }
     },
-    [config, isConfigured]
+    [
+      activeAccountId,
+      appendLocalBatch,
+      appendOrdersToServerDb,
+      buildServerPayload,
+      clearLocal,
+      config,
+      getServerScopeKey,
+      isConfigured,
+      loadLocalOrdersPage,
+      loadServerOrdersPage,
+      ordersPageSize,
+      persistServerOrders,
+      probeServerOrders,
+      refreshServerDbHint,
+    ]
   );
 
   const cancelBulkDownload = useCallback(() => {
@@ -1127,6 +1139,7 @@ function OrdersView() {
       error: '',
       result: null,
       downloadScope: null,
+      importDestination: 'local',
     });
   }, []);
 
@@ -1138,119 +1151,37 @@ function OrdersView() {
       error: '',
       result: null,
       downloadScope: null,
+      importDestination: 'local',
     });
   }, []);
 
-  const handleBulkSaveToDb = useCallback(() => {
-    const result = bulkModal.result;
-    if (!result) return;
-
-    const payload = {
-      orders: result.orders,
-      raw: result.raw,
-      meta: result.meta ?? apiMeta,
-    };
-    const saved = writeOrdersCache(activeAccountId, config, payload);
-
-    setSavedOrders(result.orders);
-    setApiRaw(result.raw);
-    setApiMeta(result.meta ?? apiMeta);
-    if (saved) {
-      applySavedCache(saved);
-    }
-    setActiveSource('saved');
-    closeBulkModal();
-    logEvent({
-      level: 'info',
-      category: 'orders',
-      action: 'orders.save.local',
-      message: `Zapisano ${result.orders.length} zamówień w bazie lokalnej`,
-      details: { count: result.orders.length },
-    });
-  }, [activeAccountId, apiMeta, applySavedCache, bulkModal.result, closeBulkModal, config]);
-
-  const handleBulkBufferOnly = useCallback(() => {
-    closeBulkModal();
-    setActiveSource('buffer');
-  }, [closeBulkModal]);
-
-  const handleBulkSaveToServerDb = useCallback(async () => {
-    const result = bulkModal.result;
-    if (!result || !activeAccountId) return;
-    try {
-      await updateServerOrders(result.orders);
-      setApiRaw(result.raw);
-      setApiMeta(result.meta ?? apiMeta);
-      setActiveSource('server');
-      closeBulkModal();
-      logEvent({
-        level: 'info',
-        category: 'orders',
-        action: 'orders.save.server',
-        message: `Zapisano ${result.orders.length} zamówień na serwerze`,
-        details: { count: result.orders.length },
-      });
-    } catch (err) {
-      setBulkModal((prev) => ({
-        ...prev,
-        phase: 'error',
-        error: err?.message || 'Nie udało się zapisać zamówień na serwerze.',
-      }));
-    }
-  }, [activeAccountId, apiMeta, bulkModal.result, closeBulkModal, updateServerOrders]);
-
-  const handleBulkSaveBoth = useCallback(() => {
-    const result = bulkModal.result;
-    if (!result) return;
-
-    const fetchedAt = new Date().toISOString();
-    const payload = {
-      orders: result.orders,
-      raw: result.raw,
-      meta: result.meta ?? apiMeta,
-    };
-    const saved = writeOrdersCache(activeAccountId, config, payload);
-
-    setSavedOrders(result.orders);
-    setBufferOrders(result.orders);
-    setBufferMeta({
-      fetchedAt,
-      fetchedAtLabel: formatFetchedAt(fetchedAt),
-    });
-    setApiRaw(result.raw);
-    setApiMeta(result.meta ?? apiMeta);
-    if (saved) {
-      applySavedCache(saved);
-    }
-    setActiveSource('saved');
-    closeBulkModal();
-  }, [activeAccountId, apiMeta, applySavedCache, bulkModal.result, closeBulkModal, config]);
-
   const statuses = useMemo(() => getUniqueOrderStatuses(orders), [orders]);
-  const filteredOrders = useMemo(
-    () => filterOrders(orders, filters),
-    [orders, filters]
-  );
 
   const ordersTotalPages = useMemo(() => {
     if (activeSource === 'server') {
       return Math.max(1, Math.ceil(serverOrdersTotal / ordersPageSize) || 1);
     }
-    return Math.max(1, Math.ceil(filteredOrders.length / ordersPageSize) || 1);
-  }, [activeSource, filteredOrders.length, ordersPageSize, serverOrdersTotal]);
+    return Math.max(1, Math.ceil(localOrdersTotal / ordersPageSize) || 1);
+  }, [activeSource, localOrdersTotal, ordersPageSize, serverOrdersTotal]);
 
   const safeOrdersPage = Math.min(Math.max(ordersPage, 1), ordersTotalPages);
 
   const paginationTotalItems =
-    activeSource === 'server' ? serverOrdersTotal : filteredOrders.length;
+    activeSource === 'server' ? serverOrdersTotal : localOrdersTotal;
 
   const paginatedOrders = useMemo(() => {
     if (activeSource === 'server') {
       return filterOrders(serverOrders, filters);
     }
-    const start = (safeOrdersPage - 1) * ordersPageSize;
-    return filteredOrders.slice(start, start + ordersPageSize);
-  }, [activeSource, filters, filteredOrders, ordersPageSize, safeOrdersPage, serverOrders]);
+    return localOrders;
+  }, [activeSource, filters, localOrders, serverOrders]);
+
+  const filteredOrders = useMemo(() => {
+    if (activeSource === 'server') {
+      return filterOrders(serverOrders, filters);
+    }
+    return localOrders;
+  }, [activeSource, localOrders, serverOrders]);
 
   useEffect(() => {
     setOrdersPage(1);
@@ -1268,11 +1199,11 @@ function OrdersView() {
   );
 
   const handleCsvExport = useCallback(
-    (scope) => {
+    async (scope) => {
       let toExport = [];
 
       if (scope === 'visible') {
-        toExport = filteredOrders;
+        toExport = paginatedOrders;
       }
 
       if (scope === 'selected') {
@@ -1280,7 +1211,18 @@ function OrdersView() {
       }
 
       if (scope === 'all') {
-        toExport = orders;
+        if (activeSource === 'local') {
+          const scopeKey = getLocalScopeKey();
+          if (scopeKey) {
+            const allRows = [];
+            await iterateLocalBatches(scopeKey, 500, async (batch) => {
+              allRows.push(...batch);
+            });
+            toExport = allRows;
+          }
+        } else {
+          toExport = orders;
+        }
       }
 
       if (!toExport.length) return;
@@ -1295,24 +1237,27 @@ function OrdersView() {
         details: { scope, count: toExport.length },
       });
     },
-    [filteredOrders, orders, selectedOrders]
+    [
+      activeSource,
+      getLocalScopeKey,
+      iterateLocalBatches,
+      orders,
+      paginatedOrders,
+      selectedOrders,
+    ]
   );
 
   const exportCounts = useMemo(
     () => ({
-      visible: filteredOrders.length,
+      visible: paginatedOrders.length,
       selected: selectedOrders.length,
-      all: orders.length,
+      all: activeSource === 'local' ? localOrdersTotal : orders.length,
     }),
-    [filteredOrders.length, orders.length, selectedOrders.length]
+    [activeSource, localOrdersTotal, orders.length, paginatedOrders.length, selectedOrders.length]
   );
 
   const exportSourceLabel =
-    activeSource === 'saved'
-      ? 'Baza lokalna'
-      : activeSource === 'server'
-        ? 'Baza danych'
-        : 'Bufor pobierania';
+    activeSource === 'local' ? 'Bufor lokalny' : 'Baza danych';
 
   const visibleOrderKeys = useMemo(
     () => paginatedOrders.map(getOrderKey).filter(Boolean),
@@ -1345,11 +1290,11 @@ function OrdersView() {
   const syncInfoFull = useMemo(
     () => ({
       ...syncInfo,
-      savedCount: savedOrders.length,
-      bufferCount: bufferOrders.length,
+      savedCount: localOrdersTotal,
+      bufferCount: localOrdersTotal,
       serverCount: serverOrdersTotal,
-      bufferFetchedAtLabel: bufferMeta.fetchedAtLabel,
-      bufferHasData: bufferOrders.length > 0,
+      bufferFetchedAtLabel: syncInfo.fetchedAtLabel,
+      bufferHasData: localOrdersTotal > 0,
       activeSource,
       isDemoMode,
       accountDisplay: isDemoMode
@@ -1366,18 +1311,15 @@ function OrdersView() {
       serverSyncError,
       bulkDownloading,
       bulkProgress: bulkDownloading ? bulkModal.progress : null,
-      visibleTotal: orders.length,
-      visibleFiltered: filteredOrders.length,
+      visibleTotal: activeSource === 'local' ? localOrdersTotal : orders.length,
+      visibleFiltered: activeSource === 'local' ? localOrdersTotal : filteredOrders.length,
     }),
     [
       syncInfo,
-      savedOrders.length,
-      bufferOrders.length,
-      serverOrders.length,
+      localOrdersTotal,
       serverOrdersTotal,
       serverMeta.fetchedAtLabel,
       serverSyncError,
-      bufferMeta.fetchedAtLabel,
       activeSource,
       isDemoMode,
       activeAccount,
@@ -1391,22 +1333,23 @@ function OrdersView() {
 
   return (
     <>
+      <OrdersPageInitOverlay
+        visible={showPageInitOverlay}
+        step={pageInitStep || 'local'}
+        localCount={localCacheHydrated ? localOrdersTotal : null}
+        serverCount={serverDbHintReady ? serverOrdersTotal : null}
+      />
+
       <ServerOrdersLoadOverlay
         phase={serverLoadPhase}
-        totalItems={serverOrdersTotal}
-        localCount={serverLoadDiff.localCount}
-        missingCount={serverLoadDiff.missingCount}
-        diffLoading={serverLoadDiff.loading}
         label={serverLoadProgress.label}
         page={serverLoadProgress.page}
         totalPages={serverLoadProgress.totalPages}
         itemFrom={serverLoadProgress.itemFrom}
         itemTo={serverLoadProgress.itemTo}
+        totalItems={serverLoadProgress.totalItems || serverOrdersTotal}
         percent={serverLoadProgress.percent}
         loading={serverOrdersLoading}
-        onLoadAll={handleLoadAllFromServer}
-        onLoadMissing={handleLoadMissingFromServer}
-        onDecline={handleDeclineServerLoad}
       />
 
       <PageShell
@@ -1445,34 +1388,33 @@ function OrdersView() {
               <div className="space-y-4 min-w-0 xl:col-start-1">
                 <OrdersSourceToggle
                   activeSource={activeSource}
-                  savedCount={savedOrders.length}
-                  bufferCount={bufferOrders.length}
+                  localCount={localOrdersTotal}
                   serverCount={serverOrdersTotal}
+                  syncSummary={
+                    serverLoadPhase || !serverDbHintReady ? null : sourceSyncSummary
+                  }
                   onChange={handleSourceChange}
                 />
 
-                {activeSource === 'saved' && (
+                {activeSource === 'local' && (
                   <p className="text-xs text-slate-500">
-                    Widok: zapisana baza lokalna
+                    Widok: bufor lokalny
                     {syncInfo.savedLocally && ` · ostatni zapis: ${syncInfo.fetchedAtLabel}`}
-                  </p>
-                )}
-                {activeSource === 'buffer' && (
-                  <p className="text-xs text-slate-500">
-                    Widok: bufor sesji · ostatnie pobranie: {bufferMeta.fetchedAtLabel}
+                    {localOrdersTotal > 0 &&
+                      ` · ${localOrdersTotal} w buforze, strona ${safeOrdersPage}/${ordersTotalPages}`}
                   </p>
                 )}
                 {activeSource === 'server' && (
                   <p className="text-xs text-slate-500">
-                    Widok: baza danych (serwer)
+                    Widok: baza danych
                     {serverOrdersTotal > 0 && ` · ostatni zapis: ${serverMeta.fetchedAtLabel}`}
                     {serverOrdersTotal > 0 &&
-                      ` · ${serverOrdersTotal} na serwerze, strona ${safeOrdersPage}/${ordersTotalPages}`}
+                      ` · ${serverOrdersTotal} w bazie danych, strona ${safeOrdersPage}/${ordersTotalPages}`}
                   </p>
                 )}
                 {serverSyncError && (
                   <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-2xl px-4 py-3">
-                    Błąd bazy serwerowej: {serverSyncError}
+                    Błąd bazy danych: {serverSyncError}
                   </div>
                 )}
 
@@ -1483,25 +1425,26 @@ function OrdersView() {
                 )}
 
                 {((activeSource === 'server' && serverOrdersLoading && serverLoadPhase === 'loading') ||
-                  (bulkDownloading && orders.length === 0)) && (
+                  (activeSource === 'local' && localOrdersLoading && !showPageInitOverlay) ||
+                  (bulkDownloading && localOrdersTotal === 0)) && (
                   <p className="text-sm text-slate-500 text-center py-12">
                     {activeSource === 'server'
-                      ? 'Ładowanie zamówień z serwera…'
-                      : 'Ładowanie zamówień…'}
+                      ? 'Ładowanie z bazy danych…'
+                      : 'Ładowanie bufora lokalnego…'}
                   </p>
                 )}
 
                 {!bulkDownloading &&
                   !(activeSource === 'server' && serverOrdersLoading) &&
+                  !(activeSource === 'local' && localOrdersLoading) &&
                   orders.length === 0 &&
                   !(activeSource === 'server' && serverOrdersTotal > 0) &&
+                  !(activeSource === 'local' && localOrdersTotal > 0) &&
                   !error && (
                   <p className="text-sm text-slate-400 text-center py-12 rounded-3xl border border-dashed border-slate-200">
-                    {activeSource === 'saved'
-                      ? 'Baza lokalna jest pusta. Użyj „Pobierz z Sellasist” i zapisz dane.'
-                      : activeSource === 'server'
-                        ? 'Baza danych jest pusta. Użyj importu i zapisz na serwerze.'
-                        : 'Bufor jest pusty. Użyj „Pobierz z Sellasist” i wybierz wyświetlenie w buforze.'}
+                    {activeSource === 'local'
+                      ? 'Bufor lokalny jest pusty. Użyj „Pobierz z Sellasist”.'
+                      : 'Baza danych jest pusta. Zaimportuj dane i zapisz w bazie danych.'}
                   </p>
                 )}
 
@@ -1520,8 +1463,8 @@ function OrdersView() {
                     activeSource={activeSource}
                     onToggleSelectAll={handleToggleSelectAll}
                     onDeleteSelected={() => deleteOrderKeys(selectedIds)}
-                    onMoveSelectedToSaved={moveSelectedToSaved}
-                    onMoveSelectedToBuffer={moveSelectedToBuffer}
+                    onMoveSelectedToLocal={moveSelectedToLocal}
+                    onMoveSelectedToServer={moveSelectedToServer}
                     pageSize={ordersPageSize}
                     pageSizes={ORDERS_PAGE_SIZES}
                     onPageSizeChange={setOrdersPageSize}
@@ -1600,37 +1543,29 @@ function OrdersView() {
         phase={bulkModal.phase}
         progress={bulkModal.progress}
         error={bulkModal.error}
-        resultCount={bulkModal.result?.orders?.length || 0}
+        resultCount={bulkModal.result?.count || 0}
         downloadScope={bulkModal.downloadScope}
+        importDestination={bulkModal.importDestination}
         onStartDownload={runBulkDownload}
         onCancel={cancelBulkDownload}
-        onSaveToDb={handleBulkSaveToDb}
-        onSaveToServerDb={handleBulkSaveToServerDb}
-        onBufferOnly={handleBulkBufferOnly}
-        onSaveToBoth={handleBulkSaveBoth}
         onClose={closeBulkModal}
       />
 
       <OrdersManageModal
         open={manageModalOpen}
         onClose={() => setManageModalOpen(false)}
+        syncSummary={sourceSyncSummary}
+        summaryLoading={!serverDbHintReady}
         actions={{
-          moveLocalToBuffer: moveSavedToBuffer,
-          moveLocalToBufferDisabled: bulkDownloading || savedOrders.length === 0,
-          moveBufferToLocal: moveBufferToSaved,
-          moveBufferToLocalDisabled: bulkDownloading || bufferOrders.length === 0,
-          moveServerToBuffer,
-          moveServerToBufferDisabled: bulkDownloading || serverOrdersTotal === 0,
-          moveBufferToServer,
-          moveBufferToServerDisabled: bulkDownloading || bufferOrders.length === 0,
-          moveLocalToServer: moveSavedToServer,
-          moveLocalToServerDisabled: bulkDownloading || savedOrders.length === 0,
-          moveServerToLocal: moveServerToSaved,
+          syncUnifyBoth,
+          syncMissingToLocal,
+          syncMissingToServer,
+          moveServerToLocal,
           moveServerToLocalDisabled: bulkDownloading || serverOrdersTotal === 0,
-          clearBuffer,
-          clearBufferDisabled: bufferOrders.length === 0,
-          clearLocal: clearDatabase,
-          clearLocalDisabled: savedOrders.length === 0 && !syncInfo.savedLocally,
+          moveLocalToServer,
+          moveLocalToServerDisabled: bulkDownloading || localOrdersTotal === 0,
+          clearLocal: clearLocalStore,
+          clearLocalDisabled: localOrdersTotal === 0 && !syncInfo.savedLocally,
           clearServer: clearServerDatabase,
           clearServerDisabled: serverOrdersTotal === 0,
         }}

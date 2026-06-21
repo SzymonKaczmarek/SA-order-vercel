@@ -16,7 +16,7 @@ const EXPORT_OPTIONS = [
   {
     id: 'all',
     title: 'Eksportuj wszystkie',
-    desc: 'Pełna zawartość aktywnego źródła (baza lub bufor), bez filtrów.',
+    desc: 'Pełna zawartość aktywnego źródła (baza danych lub bufor lokalny), bez filtrów.',
   },
 ];
 

@@ -4,7 +4,7 @@ import {
   setActiveAccessAccount,
   writeAccessStoreSnapshot,
 } from '../data/accessAccounts';
-import { USERS, defaultAdminAuthPayload } from '../data/users';
+import { defaultAdminAuthPayload } from '../data/users';
 import { getAccessStoreFromDb } from '../hooks/useAppDbApi';
 import { logEvent } from '../utils/eventLog';
 
@@ -191,7 +191,7 @@ export function useAuthInternal() {
       }
     }
 
-    const adminPayload = defaultAdminAuthPayload(username, password);
+    const adminPayload = await defaultAdminAuthPayload(username, password);
     if (adminPayload) {
       persistLoggedUser(adminPayload);
       setUser(adminPayload);
@@ -201,31 +201,6 @@ export function useAuthInternal() {
         action: 'auth.login.success',
         message: `Logowanie (admin): ${adminPayload.username}`,
         details: { role: adminPayload.role },
-      });
-      return true;
-    }
-
-    const found = USERS.find(
-      (u) => u.username === username.trim() && u.password === password
-    );
-
-    if (found) {
-      const payload = {
-        username: found.username,
-        role: found.role,
-        firstName: found.firstName,
-        lastName: found.lastName,
-        email: found.email,
-      };
-
-      persistLoggedUser(payload);
-      setUser(payload);
-      logEvent({
-        level: 'info',
-        category: 'auth',
-        action: 'auth.login.success',
-        message: `Logowanie (lokalne): ${payload.username}`,
-        details: { role: payload.role },
       });
       return true;
     }

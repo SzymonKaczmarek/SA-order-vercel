@@ -66,7 +66,7 @@ const WORKFLOW = [
   {
     step: 3,
     title: 'Zamówienia',
-    desc: 'Pobierz dane i pracuj na bazie lub buforze.',
+    desc: 'Pobierz dane i pracuj w bazie danych lub buforze lokalnym.',
     path: '/orders',
   },
 ];

@@ -5,10 +5,11 @@
   "scripts": {
     "develop": "gatsby develop",
     "gatsby:dev": "gatsby develop",
-    "predev:vercel": "node scripts/ensure-local-env.js",
+    "predev:vercel": "node scripts/ensure-local-env.js && node scripts/ensure-gatsby-cache.js",
     "dev:vercel": "npx vercel dev --yes",
     "env:pull": "npx vercel env pull .env.local --environment=production --yes && node scripts/print-env-setup.js",
     "db:migrate": "node scripts/db-migrate.js",
+    "hash:admin-password": "node scripts/hash-admin-password.js",
     "build": "gatsby build",
     "serve": "gatsby serve",
     "clean": "gatsby clean"

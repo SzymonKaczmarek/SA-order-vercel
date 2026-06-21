@@ -38,7 +38,7 @@ function migrateLegacyAccountCredentials(account, usersMap) {
   }
 
   if (
-    next.username === 'szym.kaczmarek@gmail.com' &&
+    next.username === 'skaczmarek' &&
     next.password === DEFAULT_USER.password
   ) {
     next = { ...next, username: DEFAULT_USER.username };

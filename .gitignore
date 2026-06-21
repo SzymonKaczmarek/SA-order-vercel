@@ -1,6 +1,7 @@
 node_modules/
 .cache/
 public/
+.gatsby-last-mode
 .netlify/
 .env
 .env.*

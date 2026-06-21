@@ -13,12 +13,53 @@ const SKIP_DB_LOG_ACTIONS = new Set([
   'get_orders_by_ids',
 ]);
 
+function summarizePayloadForLog(action, payload = {}) {
+  const summary = { action };
+
+  if (payload.scopeKey) {
+    summary.scopeKey = payload.scopeKey;
+  }
+  if (payload.accessAccountId) {
+    summary.accessAccountId = payload.accessAccountId;
+  }
+  if (payload.keys && Array.isArray(payload.keys)) {
+    summary.keysCount = payload.keys.length;
+  }
+  if (payload.payload && typeof payload.payload === 'object') {
+    const inner = payload.payload;
+    summary.ordersCount = Array.isArray(inner.orders) ? inner.orders.length : undefined;
+    summary.hasMeta = inner.meta != null;
+    summary.hasRaw = inner.raw != null;
+  }
+
+  return summary;
+}
+
+function buildDbErrorMessage(action, data = {}, fallback = '') {
+  const parts = [];
+
+  if (data.error) {
+    parts.push(String(data.error));
+  } else if (fallback) {
+    parts.push(fallback);
+  }
+
+  if (data.phase && !String(data.error || '').includes(data.phase)) {
+    parts.push(`Etap: ${data.phase}`);
+  }
+  if (data.errorCode) {
+    parts.push(`Kod PG: ${data.errorCode}`);
+  }
+  if (data.hint && !String(data.error || '').includes(data.hint)) {
+    parts.push(data.hint);
+  }
+
+  return parts.filter(Boolean).join(' · ') || fallback || `Błąd bazy: ${action}`;
+}
+
 async function callAppDb(action, payload = {}) {
   const startedAt = Date.now();
-  let logDetails = { action, ...payload };
-  if (logDetails.payload && typeof logDetails.payload === 'object') {
-    logDetails = { ...logDetails, payload: '[payload]' };
-  }
+  const logSummary = summarizePayloadForLog(action, payload);
 
   try {
     const res = await fetch(`${getBaseUrl()}/api/app-db`, {
@@ -29,7 +70,25 @@ async function callAppDb(action, payload = {}) {
 
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      throw new Error(data?.error || `Błąd app-db (${res.status})`);
+      const message = buildDbErrorMessage(
+        action,
+        data,
+        data?.error || `Błąd app-db (HTTP ${res.status})`
+      );
+      const err = new Error(message);
+      err.dbDetails = {
+        action,
+        ok: false,
+        httpStatus: res.status,
+        errorCode: data?.errorCode || null,
+        phase: data?.phase || null,
+        hint: data?.hint || null,
+        technical: data?.technical || data?.error || null,
+        details: data?.details || null,
+        durationMs: Date.now() - startedAt,
+        ...logSummary,
+      };
+      throw err;
     }
 
     if (!SKIP_DB_LOG_ACTIONS.has(action)) {
@@ -38,26 +97,56 @@ async function callAppDb(action, payload = {}) {
         level: 'system',
         category: 'db',
         action: `db.${action}`,
-        message: `Zapytanie do bazy: ${action}`,
-        details: { ...logDetails, ok: true, durationMs: Date.now() - startedAt },
+        message: `Zapis/odczyt bazy OK: ${action}`,
+        details: { ...logSummary, ok: true, durationMs: Date.now() - startedAt },
       });
     }
 
     return data;
   } catch (err) {
+    if (!err.dbDetails) {
+      const isNetwork =
+        err?.name === 'TypeError' &&
+        /failed to fetch|networkerror|load failed/i.test(String(err.message || ''));
+
+      if (isNetwork) {
+        err.message =
+          'Brak połączenia z API aplikacji (/api/app-db). Sprawdź internet, odśwież stronę lub uruchom lokalnie: npm run dev:vercel.';
+        err.dbDetails = {
+          action,
+          ok: false,
+          errorCode: 'NETWORK',
+          phase: 'fetch',
+          hint: 'Frontend nie dotarł do serwera API (Vercel dev / produkcja).',
+          ...logSummary,
+          durationMs: Date.now() - startedAt,
+        };
+      } else {
+        err.dbDetails = {
+          action,
+          ok: false,
+          ...logSummary,
+          durationMs: Date.now() - startedAt,
+          error: err.message,
+        };
+      }
+    }
+
     if (!SKIP_DB_LOG_ACTIONS.has(action)) {
       const { logEvent } = await import('../utils/eventLog');
+      const details = err.dbDetails || {
+        ...logSummary,
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        error: err.message,
+      };
+
       logEvent({
         level: 'error',
         category: 'db',
         action: `db.${action}.error`,
-        message: `Błąd bazy: ${action}`,
-        details: {
-          ...logDetails,
-          ok: false,
-          durationMs: Date.now() - startedAt,
-          error: err.message,
-        },
+        message: err.message || `Błąd bazy: ${action}`,
+        details,
       });
     }
     throw err;
@@ -142,19 +231,24 @@ export async function resolveOrdersScopeFromDb(accessAccountId, configHint = '')
 }
 
 export async function getOrdersFromServerDb(scopeKey, { offset, limit } = {}) {
-  const payload = { scopeKey };
+  const requestPayload = { scopeKey };
   if (offset !== undefined) {
-    payload.offset = offset;
+    requestPayload.offset = offset;
   }
   if (limit !== undefined) {
-    payload.limit = limit;
+    requestPayload.limit = limit;
   }
-  const { data } = await callAppDb('get_orders', payload);
+  const { data } = await callAppDb('get_orders', requestPayload);
   return data;
 }
 
 export async function setOrdersToServerDb(scopeKey, payload) {
   await callAppDb('set_orders', { scopeKey, payload });
+}
+
+export async function appendOrdersToServerDb(scopeKey, orders, payload = {}) {
+  const { data } = await callAppDb('append_orders', { scopeKey, orders, payload });
+  return data;
 }
 
 export async function clearOrdersFromServerDb(scopeKey) {

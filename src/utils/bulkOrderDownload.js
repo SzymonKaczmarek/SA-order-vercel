@@ -196,7 +196,7 @@ export async function downloadAllOrders(
   const limiter = new RequestRateLimiter(MAX_REQUESTS_PER_MINUTE);
   let offset = 0;
   let packageNum = 0;
-  const allOrders = [];
+  let fetchedTotal = 0;
   const startTime = Date.now();
   let hasMore = true;
   let totalKnown =
@@ -213,7 +213,7 @@ export async function downloadAllOrders(
       throw new Error('Pobieranie anulowane.');
     }
 
-    if (latestCount != null && allOrders.length >= latestCount) {
+    if (latestCount != null && fetchedTotal >= latestCount) {
       break;
     }
 
@@ -221,7 +221,7 @@ export async function downloadAllOrders(
     packageNum += 1;
 
     const pageLimit =
-      latestCount != null ? Math.min(PAGE_SIZE, latestCount - allOrders.length) : PAGE_SIZE;
+      latestCount != null ? Math.min(PAGE_SIZE, latestCount - fetchedTotal) : PAGE_SIZE;
 
     const data = await fetchPageWithRetry(
       () => fetchPage(buildFetchParams(offset, idRange, pageLimit)),
@@ -231,12 +231,12 @@ export async function downloadAllOrders(
     let batch = filterOrdersByIdRange(rawBatch, idRange);
 
     if (latestCount != null) {
-      const remaining = latestCount - allOrders.length;
+      const remaining = latestCount - fetchedTotal;
       if (remaining <= 0) break;
       if (batch.length > remaining) batch = batch.slice(0, remaining);
     }
 
-    allOrders.push(...batch);
+    fetchedTotal += batch.length;
     lastMeta = data.meta ?? lastMeta;
     lastRaw = data.raw ?? lastRaw;
 
@@ -249,7 +249,7 @@ export async function downloadAllOrders(
     }
 
     if (latestCount != null) {
-      hasMore = allOrders.length < latestCount && rawBatch.length >= pageLimit;
+      hasMore = fetchedTotal < latestCount && rawBatch.length >= pageLimit;
     } else if (idRange) {
       hasMore = rawBatch.length >= PAGE_SIZE && !shouldStopAfterBatch(rawBatch, idRange);
     } else {
@@ -260,7 +260,7 @@ export async function downloadAllOrders(
     const avgSecPerPackage = elapsedSec / packageNum;
 
     const remainingOrdersCount =
-      totalKnown != null ? Math.max(0, totalKnown - allOrders.length) : null;
+      totalKnown != null ? Math.max(0, totalKnown - fetchedTotal) : null;
     const remainingPackagesCount =
       remainingOrdersCount != null
         ? Math.ceil(remainingOrdersCount / PAGE_SIZE)
@@ -277,14 +277,14 @@ export async function downloadAllOrders(
 
     const progressPercent =
       totalKnown != null && totalKnown > 0
-        ? Math.min(hasMore ? 99 : 100, Math.round((allOrders.length / totalKnown) * 100))
+        ? Math.min(hasMore ? 99 : 100, Math.round((fetchedTotal / totalKnown) * 100))
         : hasMore
           ? Math.min(92, Math.round((packageNum / (packageNum + 1)) * 100))
           : 100;
 
     onProgress({
       packageNum,
-      fetchedTotal: allOrders.length,
+      fetchedTotal,
       lastBatchSize: batch.length,
       hasMore,
       remainingPackages:
@@ -305,10 +305,10 @@ export async function downloadAllOrders(
       status: hasMore ? 'downloading' : 'complete',
     });
 
-    onBatch?.({
+    await onBatch?.({
       packageNum,
       batch,
-      orders: allOrders,
+      fetchedTotal,
       meta: lastMeta,
       apiRaw: lastRaw,
     });
@@ -318,12 +318,11 @@ export async function downloadAllOrders(
   }
 
   return {
-    orders: allOrders,
+    count: fetchedTotal,
     packages: packageNum,
-    raw: allOrders,
     meta: lastMeta,
     apiRaw: lastRaw,
-    total: totalKnown ?? allOrders.length,
+    total: totalKnown ?? fetchedTotal,
     downloadScope: downloadScope || { type: 'all' },
     idRange: idRange || null,
     latestCount: latestCount ?? null,
