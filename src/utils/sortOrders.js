@@ -5,6 +5,7 @@ import {
 
 export const ORDER_SORT_FIELDS = [
   { id: 'date', label: 'Data' },
+  { id: 'id', label: 'ID' },
   { id: 'status', label: 'Status' },
   { id: 'surname', label: 'Nazwisko' },
   { id: 'amount', label: 'Kwota' },

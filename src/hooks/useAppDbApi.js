@@ -10,6 +10,8 @@ const SKIP_DB_LOG_ACTIONS = new Set([
   'resolve_orders_scope',
   'list_orders_scopes',
   'list_order_ids',
+  'list_order_statuses',
+  'get_max_order_id',
   'get_orders_by_ids',
 ]);
 
@@ -264,6 +266,21 @@ export async function clearOrdersFromServerDb(scopeKey) {
 export async function listOrderIdsFromServerDb(scopeKey) {
   const { data } = await callAppDb('list_order_ids', { scopeKey });
   return Array.isArray(data?.ids) ? data.ids : [];
+}
+
+export async function listOrderStatusesFromServerDb(scopeKey) {
+  const { data } = await callAppDb('list_order_statuses', { scopeKey });
+  return Array.isArray(data?.statuses) ? data.statuses : [];
+}
+
+export async function getMaxOrderIdFromServerDb(scopeKey) {
+  const { data } = await callAppDb('get_max_order_id', { scopeKey });
+  const maxOrderId = data?.maxOrderId;
+  if (maxOrderId == null) {
+    return null;
+  }
+  const num = Number(maxOrderId);
+  return Number.isFinite(num) && num >= 1 ? num : null;
 }
 
 export async function getOrdersByIdsFromServerDb(scopeKey, keys) {

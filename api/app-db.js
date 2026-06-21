@@ -12,6 +12,8 @@ const {
   deleteOrdersByKeys,
   getOrderIds,
   getOrdersByIds,
+  listOrderStatusLabels,
+  getMaxOrderId,
 } = require('../lib/ordersDb');
 
 module.exports = async function handler(req, res) {
@@ -111,6 +113,32 @@ module.exports = async function handler(req, res) {
       return jsonResponse(res, 200, {
         ok: true,
         data: { ids, total: ids.length },
+      });
+    }
+
+    if (action === 'list_order_statuses') {
+      const scopeKey = String(body.scopeKey || '').trim();
+      if (!scopeKey) {
+        return jsonResponse(res, 400, { error: 'Brak scopeKey' });
+      }
+
+      const statuses = await listOrderStatusLabels(scopeKey);
+      return jsonResponse(res, 200, {
+        ok: true,
+        data: { statuses, total: statuses.length },
+      });
+    }
+
+    if (action === 'get_max_order_id') {
+      const scopeKey = String(body.scopeKey || '').trim();
+      if (!scopeKey) {
+        return jsonResponse(res, 400, { error: 'Brak scopeKey' });
+      }
+
+      const maxOrderId = await getMaxOrderId(scopeKey);
+      return jsonResponse(res, 200, {
+        ok: true,
+        data: { maxOrderId },
       });
     }
 

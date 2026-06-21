@@ -1,4 +1,6 @@
 /** Mniejsze paczki = szybsza odpowiedź funkcji Netlify (limit ~10 s na darmowym planie). */
+import { resolveContinueFromStored } from './storedOrderBounds';
+
 const PAGE_SIZE = 50;
 const MAX_REQUESTS_PER_MINUTE = 150;
 const MINUTE_MS = 60_000;
@@ -82,7 +84,10 @@ function filterOrdersByIdRange(orders, idRange) {
   if (!idRange) return orders;
   return orders.filter((order) => {
     const id = getOrderNumericId(order);
-    return id != null && id >= idRange.from && id <= idRange.to;
+    if (id == null) return false;
+    if (idRange.from != null && id < idRange.from) return false;
+    if (idRange.to != null && id > idRange.to) return false;
+    return true;
   });
 }
 
@@ -128,9 +133,26 @@ export function parseLatestCountInput(input) {
   return { ok: true, count };
 }
 
-export function parseDownloadScope(scope, { idFrom, idTo, latestCount }) {
+export function parseDownloadScope(scope, { idFrom, idTo, latestCount, storedBounds, destination } = {}) {
   if (scope === 'all') {
     return { ok: true, downloadScope: { type: 'all' } };
+  }
+
+  if (scope === 'continueFromStored') {
+    const resolved = resolveContinueFromStored(destination, storedBounds);
+    if (!resolved.ok) {
+      return resolved;
+    }
+
+    return {
+      ok: true,
+      downloadScope: {
+        type: 'continueFromStored',
+        fromId: resolved.fromId,
+        lastStoredId: resolved.lastStoredId,
+        storageSource: resolved.storageSource,
+      },
+    };
   }
 
   if (scope === 'latest') {
@@ -157,6 +179,15 @@ export function formatDownloadScopeSummary(downloadScope) {
     return `Ostatnie ${downloadScope.latestCount} zamówień`;
   }
 
+  if (downloadScope.type === 'continueFromStored') {
+    const fromId = downloadScope.fromId;
+    const lastId = downloadScope.lastStoredId;
+    if (fromId && lastId) {
+      return `Kontynuacja od ID ${fromId} (po ${lastId}) do końca`;
+    }
+    return 'Kontynuacja od ostatniego zapisanego ID do końca';
+  }
+
   if (downloadScope.type === 'idRange' && downloadScope.idRange) {
     return `ID ${downloadScope.idRange.from} – ${downloadScope.idRange.to}`;
   }
@@ -176,7 +207,7 @@ function buildFetchParams(offset, idRange, limit = PAGE_SIZE) {
 }
 
 function shouldStopAfterBatch(rawBatch, idRange) {
-  if (!idRange || rawBatch.length === 0) return false;
+  if (!idRange || idRange.to == null || rawBatch.length === 0) return false;
 
   const ids = rawBatch.map(getOrderNumericId).filter((id) => id != null);
   if (ids.length === 0) return false;
@@ -190,7 +221,12 @@ export async function downloadAllOrders(
   fetchPage,
   { onProgress, onBatch, signal, downloadScope, resumeFrom = null }
 ) {
-  const idRange = downloadScope?.type === 'idRange' ? downloadScope.idRange : null;
+  const idRange =
+    downloadScope?.type === 'idRange'
+      ? downloadScope.idRange
+      : downloadScope?.type === 'continueFromStored'
+        ? { from: downloadScope.fromId, to: null }
+        : null;
   const latestCount = downloadScope?.type === 'latest' ? downloadScope.latestCount : null;
 
   const limiter = new RequestRateLimiter(MAX_REQUESTS_PER_MINUTE);
@@ -203,7 +239,7 @@ export async function downloadAllOrders(
     resumeFrom?.totalKnown ??
     (latestCount != null
       ? latestCount
-      : idRange
+      : idRange?.to != null
         ? idRange.to - idRange.from + 1
         : null);
   let lastMeta = null;
@@ -302,6 +338,7 @@ export async function downloadAllOrders(
           : hasMore
             ? `≥ ${PAGE_SIZE}`
             : '0',
+      etaSeconds,
       etaLabel: hasMore ? formatEta(etaSeconds) : 'Zakończono',
       progressPercent,
       requestsThisMinute: limiter.timestamps.length,

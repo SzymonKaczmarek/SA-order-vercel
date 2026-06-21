@@ -21,6 +21,7 @@ import {
   buildOrdersScopeKey,
   formatFetchedAt,
 } from '../data/ordersLocalDb';
+import { listOrderStatuses, getMaxOrderId } from '../data/ordersStore';
 import { getAccessAccountDisplayName } from '../data/accessAccounts';
 import { fetchSellasistOrders, testSellasistConnection } from '../hooks/useSellasistApi';
 import {
@@ -30,6 +31,8 @@ import {
   getOrdersByIdsFromServerDb,
   getOrdersFromServerDb,
   listOrderIdsFromServerDb,
+  listOrderStatusesFromServerDb,
+  getMaxOrderIdFromServerDb,
   resolveOrdersScopeFromDb,
   setOrdersToServerDb,
 } from '../hooks/useAppDbApi';
@@ -52,7 +55,7 @@ import { logEvent } from '../utils/eventLog';
 import {
   EMPTY_FILTERS,
   filterOrders,
-  getUniqueOrderStatuses,
+  mergeStatusFilterOptions,
   hasActiveFilters,
 } from '../utils/filterOrders';
 import {
@@ -104,6 +107,12 @@ function OrdersView() {
   const [error, setError] = useState('');
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [orderSort, setOrderSort] = useState(DEFAULT_ORDER_SORT);
+  const [availableStatuses, setAvailableStatuses] = useState([]);
+  const [bulkStoredBounds, setBulkStoredBounds] = useState({
+    loading: false,
+    localMax: null,
+    serverMax: null,
+  });
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkModal, setBulkModal] = useState({
     open: false,
@@ -1006,6 +1015,61 @@ function OrdersView() {
     setError('');
   }, [isConfigured]);
 
+  useEffect(() => {
+    if (!bulkModal.open || bulkModal.phase !== 'setup' || !activeAccountId) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const loadStoredBounds = async () => {
+      setBulkStoredBounds((current) => ({ ...current, loading: true }));
+
+      const localScopeKey = getLocalScopeKey();
+      const serverScopeKey = getServerScopeKey();
+
+      let localMax = null;
+      let serverMax = null;
+
+      if (localScopeKey && localOrdersTotal > 0) {
+        try {
+          localMax = await getMaxOrderId(localScopeKey);
+        } catch (_err) {
+          localMax = null;
+        }
+      }
+
+      if (serverScopeKey && serverOrdersTotal > 0) {
+        try {
+          serverMax = await getMaxOrderIdFromServerDb(serverScopeKey);
+        } catch (_err) {
+          serverMax = null;
+        }
+      }
+
+      if (!cancelled) {
+        setBulkStoredBounds({
+          loading: false,
+          localMax,
+          serverMax,
+        });
+      }
+    };
+
+    loadStoredBounds();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeAccountId,
+    bulkModal.open,
+    bulkModal.phase,
+    getLocalScopeKey,
+    getServerScopeKey,
+    localOrdersTotal,
+    serverOrdersTotal,
+  ]);
+
   const runBulkDownload = useCallback(
     async ({ downloadScope, destination = 'local', resume = false } = {}) => {
       if (!activeAccountId) return;
@@ -1074,13 +1138,14 @@ function OrdersView() {
 
       const savesLocal = effectiveDestination === 'local' || effectiveDestination === 'both';
       const savesServer = effectiveDestination === 'server' || effectiveDestination === 'both';
+      const isContinueImport = effectiveScope?.type === 'continueFromStored';
 
       abortRef.current = new AbortController();
       bulkAbortModeRef.current = null;
       const importStartedAt = savedResume?.importStartedAt || new Date().toISOString();
       let fetchedAny = Boolean(savedResume?.fetchedTotal);
 
-      if (!savedResume) {
+      if (!savedResume && !isContinueImport) {
         clearBulkImportResume(activeAccountId);
         if (savesLocal) {
           await clearLocal();
@@ -1457,7 +1522,75 @@ function OrdersView() {
     });
   }, []);
 
-  const statuses = useMemo(() => getUniqueOrderStatuses(orders), [orders]);
+  const statuses = availableStatuses;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadStatuses = async () => {
+      if (!activeAccountId || !isConfigured) {
+        if (!cancelled) {
+          setAvailableStatuses([]);
+        }
+        return;
+      }
+
+      if (activeSource === 'local') {
+        const scopeKey = getLocalScopeKey();
+        if (!scopeKey || localOrdersTotal <= 0) {
+          if (!cancelled) {
+            setAvailableStatuses(mergeStatusFilterOptions([], filters.status));
+          }
+          return;
+        }
+
+        try {
+          const list = await listOrderStatuses(scopeKey);
+          if (!cancelled) {
+            setAvailableStatuses(mergeStatusFilterOptions(list, filters.status));
+          }
+        } catch (_err) {
+          if (!cancelled) {
+            setAvailableStatuses(mergeStatusFilterOptions([], filters.status));
+          }
+        }
+        return;
+      }
+
+      const scopeKey = getServerScopeKey();
+      if (!scopeKey || serverOrdersTotal <= 0) {
+        if (!cancelled) {
+          setAvailableStatuses(mergeStatusFilterOptions([], filters.status));
+        }
+        return;
+      }
+
+      try {
+        const list = await listOrderStatusesFromServerDb(scopeKey);
+        if (!cancelled) {
+          setAvailableStatuses(mergeStatusFilterOptions(list, filters.status));
+        }
+      } catch (_err) {
+        if (!cancelled) {
+          setAvailableStatuses(mergeStatusFilterOptions([], filters.status));
+        }
+      }
+    };
+
+    loadStatuses();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeAccountId,
+    activeSource,
+    filters.status,
+    getLocalScopeKey,
+    getServerScopeKey,
+    isConfigured,
+    localOrdersTotal,
+    serverOrdersTotal,
+  ]);
 
   const ordersTotalPages = useMemo(() => {
     if (activeSource === 'server') {
@@ -1868,6 +2001,7 @@ function OrdersView() {
         importDestination={bulkModal.importDestination}
         sellasistSummary={sellasistSummary}
         resumeInfo={bulkResumeInfo}
+        storedOrderBounds={bulkStoredBounds}
         onStartDownload={runBulkDownload}
         onResumeDownload={resumeBulkDownload}
         onDiscardResume={discardBulkResume}

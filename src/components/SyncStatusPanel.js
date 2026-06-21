@@ -1,6 +1,7 @@
 import React from 'react';
+import { getBulkImportProgressRows } from '../utils/bulkImportProgressDisplay';
 
-function SyncStatRow({ label, value, valueClassName = '' }) {
+function SyncStatRow({ label, value, detail, valueClassName = '' }) {
   return (
     <div className="grid grid-cols-1 gap-0.5 text-xs min-w-0">
       <span className="text-slate-500 leading-snug">{label}</span>
@@ -9,6 +10,7 @@ function SyncStatRow({ label, value, valueClassName = '' }) {
       >
         {value}
       </span>
+      {detail ? <span className="text-[10px] text-slate-400 leading-snug">{detail}</span> : null}
     </div>
   );
 }
@@ -107,12 +109,14 @@ export function SyncStatusPanel({ syncInfo }) {
       {bulkDownloading && bulkProgress && (
         <SyncSection title="Trwa pobieranie z API" accent="amber">
           <SyncStatRow label="Status" value="Import w toku…" valueClassName="text-amber-800" />
-          <SyncStatRow label="Aktualna paczka" value={`#${bulkProgress.packageNum}`} />
-          <SyncStatRow label="Pobrano łącznie" value={`${bulkProgress.fetchedTotal} zamówień`} />
-          <SyncStatRow label="W ostatniej paczce" value={bulkProgress.lastBatchSize} />
-          <SyncStatRow label="Pozostało paczek" value={bulkProgress.remainingPackages} />
-          <SyncStatRow label="Szac. pozostało zamówień" value={bulkProgress.remainingOrders} />
-          <SyncStatRow label="Przewidywany czas" value={bulkProgress.etaLabel} />
+          {getBulkImportProgressRows(bulkProgress).map((row) => (
+            <SyncStatRow
+              key={row.id}
+              label={row.label}
+              value={row.value}
+              detail={row.detail}
+            />
+          ))}
           <div className="h-1.5 rounded-full bg-amber-100 overflow-hidden mt-1">
             <div
               className="h-full rounded-full bg-amber-500 transition-all duration-500"

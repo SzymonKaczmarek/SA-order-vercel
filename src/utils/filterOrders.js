@@ -60,6 +60,15 @@ export function getUniqueOrderStatuses(orders) {
   return Array.from(set).sort((a, b) => a.localeCompare(b, 'pl'));
 }
 
+export function mergeStatusFilterOptions(statuses, selectedStatus = '') {
+  const set = new Set(Array.isArray(statuses) ? statuses : []);
+  const selected = String(selectedStatus || '').trim();
+  if (selected) {
+    set.add(selected);
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b, 'pl'));
+}
+
 export function filterOrders(orders, filters) {
   if (!filters) return orders;
 

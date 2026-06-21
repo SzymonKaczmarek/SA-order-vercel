@@ -7,6 +7,11 @@ import {
 } from './Icons';
 import { formatDownloadScopeSummary, parseDownloadScope } from '../utils/bulkOrderDownload';
 import { formatBulkImportResumeSummary } from '../utils/bulkImportResume';
+import { getContinueFromStoredPreview } from '../utils/storedOrderBounds';
+import {
+  getBulkImportHeadline,
+  getBulkImportProgressRows,
+} from '../utils/bulkImportProgressDisplay';
 
 const IMPORT_DESTINATIONS = [
   {
@@ -32,11 +37,16 @@ const DESTINATION_LABELS = {
   both: 'buforze lokalnym i bazie danych',
 };
 
-function StatRow({ label, value }) {
+function StatRow({ label, value, detail }) {
   return (
-    <div className="flex items-center justify-between gap-3 text-sm">
-      <span className="text-slate-500">{label}</span>
-      <span className="font-semibold text-slate-800 text-right">{value}</span>
+    <div className="flex items-start justify-between gap-3 text-sm">
+      <span className="text-slate-500 shrink-0">{label}</span>
+      <div className="text-right min-w-0">
+        <span className="font-semibold text-slate-800 block">{value}</span>
+        {detail ? (
+          <span className="text-[11px] text-slate-400 block mt-0.5 leading-snug">{detail}</span>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -51,6 +61,7 @@ export function BulkDownloadModal({
   importDestination = 'local',
   sellasistSummary = '',
   resumeInfo = null,
+  storedOrderBounds = null,
   onCancel,
   onPause,
   onStartDownload,
@@ -90,7 +101,13 @@ export function BulkDownloadModal({
   const isError = phase === 'error';
 
   const handleStart = () => {
-    const parsed = parseDownloadScope(scope, { idFrom, idTo, latestCount });
+    const parsed = parseDownloadScope(scope, {
+      idFrom,
+      idTo,
+      latestCount,
+      destination,
+      storedBounds: storedOrderBounds,
+    });
     if (!parsed.ok) {
       setSetupError(parsed.error);
       return;
@@ -102,6 +119,11 @@ export function BulkDownloadModal({
       destination,
     });
   };
+
+  const continuePreview =
+    scope === 'continueFromStored' && storedOrderBounds
+      ? getContinueFromStoredPreview(destination, storedOrderBounds)
+      : null;
 
   const rangeSummary = formatDownloadScopeSummary(downloadScope);
   const savedWhere = DESTINATION_LABELS[importDestination] || DESTINATION_LABELS.local;
@@ -321,6 +343,54 @@ export function BulkDownloadModal({
                     )}
                   </span>
                 </label>
+
+                <label className="flex items-start gap-3 rounded-2xl border border-slate-200 p-4 cursor-pointer has-[:checked]:border-brand-primary has-[:checked]:ring-2 has-[:checked]:ring-brand-primary/15">
+                  <input
+                    type="radio"
+                    name="download-scope"
+                    checked={scope === 'continueFromStored'}
+                    onChange={() => setScope('continueFromStored')}
+                    className="mt-0.5"
+                  />
+                  <span className="flex-1 space-y-2">
+                    <span>
+                      <span className="block text-sm font-semibold text-slate-900">
+                        Kontynuuj od ostatniego zapisanego ID
+                      </span>
+                      <span className="block text-xs text-slate-500 mt-0.5">
+                        Pobiera tylko brakującą resztę — od kolejnego ID po ostatnim zamówieniu już
+                        zapisanym w wybranym miejscu zapisu (bufor / baza). Istniejące dane
+                        zostają, nowe są dopisywane.
+                      </span>
+                    </span>
+
+                    {scope === 'continueFromStored' && (
+                      <div className="rounded-xl border border-sky-100 bg-sky-50/80 px-3 py-2 text-xs text-sky-900 leading-relaxed">
+                        {storedOrderBounds?.loading ? (
+                          'Sprawdzanie ostatniego zapisanego ID…'
+                        ) : continuePreview?.ok ? (
+                          <>
+                            <strong>{continuePreview.preview}</strong>
+                            <p className="mt-1 text-sky-800/80">
+                              Bufor:{' '}
+                              {storedOrderBounds?.localMax != null
+                                ? `ostatnie ID ${storedOrderBounds.localMax}`
+                                : 'brak danych'}
+                              {' · '}
+                              Baza:{' '}
+                              {storedOrderBounds?.serverMax != null
+                                ? `ostatnie ID ${storedOrderBounds.serverMax}`
+                                : 'brak danych'}
+                            </p>
+                          </>
+                        ) : (
+                          continuePreview?.error ||
+                          'Wybierz miejsce zapisu i upewnij się, że są już pobrane zamówienia.'
+                        )}
+                      </div>
+                    )}
+                  </span>
+                </label>
               </div>
 
               {setupError && (
@@ -368,7 +438,7 @@ export function BulkDownloadModal({
                 <IconHourglass spinning className="w-10 h-10 text-brand-accent" />
                 <div>
                   <p className="text-sm font-semibold text-slate-800">Trwa import zamówień…</p>
-                  <p className="text-xs text-slate-500 mt-0.5">Paczka {progress.packageNum}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">{getBulkImportHeadline(progress)}</p>
                 </div>
               </div>
 
@@ -379,17 +449,15 @@ export function BulkDownloadModal({
                 />
               </div>
 
-              <div className="rounded-2xl bg-slate-50 border border-slate-100 p-4 space-y-2">
-                <StatRow label="Aktualna paczka" value={`#${progress.packageNum}`} />
-                <StatRow label="Pobrano łącznie" value={`${progress.fetchedTotal} zamówień`} />
-                <StatRow label="W ostatniej paczce" value={progress.lastBatchSize} />
-                <StatRow label="Pozostało paczek" value={progress.remainingPackages} />
-                <StatRow label="Szac. pozostało zamówień" value={progress.remainingOrders} />
-                <StatRow label="Przewidywany czas" value={progress.etaLabel} />
-                <StatRow
-                  label="Żądań w tej minucie"
-                  value={`${progress.requestsThisMinute} / 150`}
-                />
+              <div className="rounded-2xl bg-slate-50 border border-slate-100 p-4 space-y-3">
+                {getBulkImportProgressRows(progress).map((row) => (
+                  <StatRow
+                    key={row.id}
+                    label={row.label}
+                    value={row.value}
+                    detail={row.detail}
+                  />
+                ))}
               </div>
 
               <p className="text-[11px] text-slate-500 leading-relaxed rounded-xl border border-amber-100 bg-amber-50/80 px-3 py-2">

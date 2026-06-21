@@ -15,7 +15,7 @@ import { useSellasistConfig } from '../hooks/useSellasistConfig';
 import { testSellasistConnection, normalizeSellasistAccount } from '../hooks/useSellasistApi';
 
 export function SellasistConfigForm({ onSaved, compact = false }) {
-  const { config, loaded, setConfig, isDemoMode } = useSellasistConfig();
+  const { config, loaded, setConfig, isDemoMode, loadError } = useSellasistConfig();
   const [account, setAccount] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [useDemoData, setUseDemoData] = useState(false);
@@ -38,34 +38,49 @@ export function SellasistConfigForm({ onSaved, compact = false }) {
     setError('');
     setMessage('');
 
-    setConfig({ account, apiKey, useDemoData });
-    setMessage(
-      useDemoData
-        ? 'Zapisano tryb demo – zamówienia pochodzą z przykładów w dokumentacji API.'
-        : 'Konfiguracja zapisana dla aktywnego konta dostępu.'
-    );
-    setSaving(false);
-    onSaved?.();
+    try {
+      await setConfig({ account, apiKey, useDemoData });
+      setMessage(
+        useDemoData
+          ? 'Zapisano tryb demo w bazie danych – zamówienia pochodzą z przykładów w dokumentacji API.'
+          : 'Konfiguracja zapisana w bazie danych dla aktywnego konta dostępu.'
+      );
+      onSaved?.();
+    } catch (err) {
+      setError(err?.message || 'Nie udało się zapisać konfiguracji w bazie danych.');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleUseDemo = () => {
+  const handleUseDemo = async () => {
     setError('');
     setMessage('');
     setAccount(SELLASIST_DEMO_PRESET.account);
     setApiKey('');
     setUseDemoData(true);
-    setConfig(SELLASIST_DEMO_PRESET);
-    setMessage(
-      'Włączono tryb demo. Dane zamówień pochodzą ze schematów OpenAPI w dokumentacji Sellasist – bez wywołań do API.'
-    );
-    onSaved?.();
+
+    try {
+      await setConfig(SELLASIST_DEMO_PRESET);
+      setMessage(
+        'Włączono tryb demo w bazie danych. Dane zamówienia pochodzą ze schematów OpenAPI w dokumentacji Sellasist – bez wywołań do API.'
+      );
+      onSaved?.();
+    } catch (err) {
+      setError(err?.message || 'Nie udało się zapisać trybu demo w bazie danych.');
+    }
   };
 
-  const handleDisableDemo = () => {
+  const handleDisableDemo = async () => {
     setUseDemoData(false);
-    setConfig({ account, apiKey, useDemoData: false });
-    setMessage('Tryb demo wyłączony. Podaj własne konto i klucz API.');
-    onSaved?.();
+
+    try {
+      await setConfig({ account, apiKey, useDemoData: false });
+      setMessage('Tryb demo wyłączony. Podaj własne konto i klucz API.');
+      onSaved?.();
+    } catch (err) {
+      setError(err?.message || 'Nie udało się zapisać konfiguracji w bazie danych.');
+    }
   };
 
   const handleTest = async () => {
@@ -131,8 +146,15 @@ export function SellasistConfigForm({ onSaved, compact = false }) {
 
       <form onSubmit={handleSave} className={formClass}>
         <p className="text-sm text-slate-600">
-          Połączenie produkcyjne: subdomena konta Sellasist oraz klucz API.
+          Połączenie produkcyjne: subdomena konta Sellasist oraz klucz API. Dane zapisujemy w
+          bazie danych na serwerze, przypisane do aktywnego konta dostępu — nie w przeglądarce.
         </p>
+
+        {loadError && (
+          <div className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-2">
+            {loadError}
+          </div>
+        )}
 
         <label className="flex items-center gap-3 cursor-pointer">
           <input

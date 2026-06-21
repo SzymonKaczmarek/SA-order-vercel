@@ -1,6 +1,7 @@
 import { buildOrdersScopeKey, clearOrdersCache, readOrdersCache } from './ordersLocalDb';
 import { getOrderKey } from '../utils/orderSelection';
 import { filterOrders, hasActiveFilters } from '../utils/filterOrders';
+import { getOrderStatusLabel } from '../utils/orderFormat';
 import { DEFAULT_ORDER_SORT, normalizeOrderSort, sortOrdersList } from '../utils/sortOrders';
 
 const DB_NAME = 'saor_orders_store';
@@ -312,6 +313,43 @@ export async function getFilteredPage(scopeKey, filters, offset = 0, limit = 25,
     filtered: hasActiveFilters(filters),
     sort: normalizedSort,
   };
+}
+
+export async function getMaxOrderId(scopeKey) {
+  const db = await openDb();
+  const tx = db.transaction('orders', 'readonly');
+  const index = tx.objectStore('orders').index('by_scope');
+  let max = null;
+
+  await walkCursor(index, IDBKeyRange.only(scopeKey), (cursor) => {
+    const num = Number(cursor.value?.orderKey);
+    if (!Number.isFinite(num) || num < 1) {
+      return;
+    }
+    if (max == null || num > max) {
+      max = num;
+    }
+  });
+
+  await waitTx(tx);
+  return max;
+}
+
+export async function listOrderStatuses(scopeKey) {
+  const db = await openDb();
+  const tx = db.transaction('orders', 'readonly');
+  const index = tx.objectStore('orders').index('by_scope');
+  const set = new Set();
+
+  await walkCursor(index, IDBKeyRange.only(scopeKey), (cursor) => {
+    const label = getOrderStatusLabel(cursor.value?.payload);
+    if (label && label !== '—') {
+      set.add(String(label));
+    }
+  });
+
+  await waitTx(tx);
+  return Array.from(set).sort((a, b) => a.localeCompare(b, 'pl'));
 }
 
 export async function listOrderIds(scopeKey) {
