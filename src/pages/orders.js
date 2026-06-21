@@ -14,6 +14,7 @@ import { OrdersSelectionBar, ORDERS_PAGE_SIZES } from '../components/OrdersSelec
 import { OrdersPagination } from '../components/OrdersPagination';
 import { OrdersSourceToggle } from '../components/OrdersSourceToggle';
 import { SyncStatusPanel } from '../components/SyncStatusPanel';
+import { ServerOrdersLoadOverlay } from '../components/ServerOrdersLoadOverlay';
 import { SellasistConfigModal } from '../components/SellasistConfigModal';
 import { useAccessAccount } from '../context/AccessAccountContext';
 import {
@@ -28,6 +29,7 @@ import { fetchSellasistOrders } from '../hooks/useSellasistApi';
 import {
   clearOrdersFromServerDb,
   getOrdersFromServerDb,
+  resolveOrdersScopeFromDb,
   setOrdersToServerDb,
 } from '../hooks/useAppDbApi';
 import { useSellasistConfig } from '../hooks/useSellasistConfig';
@@ -58,11 +60,29 @@ const INITIAL_PROGRESS = {
   requestsThisMinute: 0,
 };
 
+const HIDDEN_SERVER_LOAD_PROGRESS = {
+  visible: false,
+  label: '',
+  page: 1,
+  totalPages: 1,
+  itemFrom: 0,
+  itemTo: 0,
+  totalItems: 0,
+  percent: 0,
+};
+
+function getConfigHint(config) {
+  if (config?.useDemoData) return 'demo';
+  return (config?.account || '').trim().toLowerCase();
+}
+
 function OrdersView() {
   const { activeAccount, activeAccountId, ready: accountReady } = useAccessAccount();
   const { config, isConfigured, isDemoMode, loaded: configLoaded } = useSellasistConfig();
   const [savedOrders, setSavedOrders] = useState([]);
   const [serverOrders, setServerOrders] = useState([]);
+  const [serverOrdersTotal, setServerOrdersTotal] = useState(0);
+  const [serverOrdersLoading, setServerOrdersLoading] = useState(false);
   const [serverSyncError, setServerSyncError] = useState('');
   const [serverMeta, setServerMeta] = useState({
     fetchedAt: null,
@@ -99,9 +119,19 @@ function OrdersView() {
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [ordersPage, setOrdersPage] = useState(1);
   const [ordersPageSize, setOrdersPageSize] = useState(25);
+  const [serverLoadPhase, setServerLoadPhase] = useState(null);
+  const [serverLoadProgress, setServerLoadProgress] = useState(HIDDEN_SERVER_LOAD_PROGRESS);
 
   const abortRef = useRef(null);
+  const resolvedServerScopeKeyRef = useRef(null);
+  const serverKnownTotalRef = useRef(0);
+  const lastLoadedServerPageRef = useRef({ page: 0, size: 0, scope: null });
+  const serverLoadAcceptedRef = useRef(false);
+  const serverLoadPhaseRef = useRef(null);
+  const previousActiveAccountIdRef = useRef(null);
   const bulkDownloading = bulkModal.phase === 'downloading';
+
+  serverLoadPhaseRef.current = serverLoadPhase;
 
   const orders =
     activeSource === 'saved'
@@ -128,15 +158,26 @@ function OrdersView() {
   }, []);
 
   const loadSavedFromCache = useCallback(() => {
-    if (!isConfigured || !activeAccountId) return;
+    if (!activeAccountId) return null;
+
+    if (!isConfigured) {
+      setSavedOrders([]);
+      setSyncInfo({
+        fetchedAt: null,
+        fetchedAtLabel: 'Brak zapisu w bazie',
+        savedLocally: false,
+        cachedCount: 0,
+        accountLabel: '',
+      });
+      return null;
+    }
 
     const cached = readOrdersCache(activeAccountId, config);
     if (cached) {
       applySavedCache(cached);
       setApiRaw(cached.raw ?? cached.orders ?? null);
       setApiMeta(cached.meta ?? null);
-      setActiveSource('saved');
-      return;
+      return cached;
     }
 
     setSavedOrders([]);
@@ -147,7 +188,15 @@ function OrdersView() {
       cachedCount: 0,
       accountLabel: '',
     });
+    return null;
   }, [activeAccountId, applySavedCache, config, isConfigured]);
+
+  const getServerScopeKey = useCallback(() => {
+    if (resolvedServerScopeKeyRef.current) {
+      return resolvedServerScopeKeyRef.current;
+    }
+    return buildOrdersScopeKey(activeAccountId, config);
+  }, [activeAccountId, config]);
 
   const buildServerPayload = useCallback(
     (nextOrders) => ({
@@ -166,7 +215,7 @@ function OrdersView() {
   const persistServerOrders = useCallback(
     async (nextOrders) => {
       if (!activeAccountId) return;
-      const scopeKey = buildOrdersScopeKey(activeAccountId, config);
+      const scopeKey = getServerScopeKey();
 
       if (nextOrders.length === 0) {
         await clearOrdersFromServerDb(scopeKey);
@@ -186,39 +235,293 @@ function OrdersView() {
       });
       setServerSyncError('');
     },
-    [activeAccountId, buildServerPayload, config]
+    [activeAccountId, buildServerPayload, getServerScopeKey]
   );
 
-  const loadServerOrders = useCallback(async () => {
-    if (!isConfigured || !activeAccountId) return;
-    try {
-      const scopeKey = buildOrdersScopeKey(activeAccountId, config);
-      const entry = await getOrdersFromServerDb(scopeKey);
-      setServerOrders(Array.isArray(entry?.orders) ? entry.orders : []);
-      setServerMeta({
-        fetchedAt: entry?.fetchedAt || null,
-        fetchedAtLabel: entry?.fetchedAt
-          ? formatFetchedAt(entry.fetchedAt)
-          : 'Brak zapisu na serwerze',
-      });
+  const loadServerOrdersPage = useCallback(
+    async (page, size, scopeKeyOverride = null) => {
+      if (!activeAccountId) {
+        setServerOrders([]);
+        setServerOrdersTotal(0);
+        return 0;
+      }
+
+      const scopeKey = scopeKeyOverride || resolvedServerScopeKeyRef.current;
+      if (!scopeKey) {
+        setServerSyncError('Brak powiązanego zapisu zamówień na serwerze.');
+        return 0;
+      }
+
+      const safePage = Math.max(1, page);
+      const offset = (safePage - 1) * size;
+      setServerOrdersLoading(true);
       setServerSyncError('');
-    } catch (err) {
-      setServerOrders([]);
-      setServerSyncError(err?.message || 'Nie udało się odczytać bazy serwerowej.');
+      setServerLoadPhase('loading');
+      setServerLoadProgress((current) => ({
+        visible: true,
+        label: 'Pobieranie produktów z bazy Neon…',
+        page: safePage,
+        totalPages: Math.max(1, Math.ceil((serverKnownTotalRef.current || size) / size) || 1),
+        itemFrom: offset + 1,
+        itemTo: Math.min(offset + size, serverKnownTotalRef.current || offset + size),
+        totalItems: serverKnownTotalRef.current || current.totalItems || 0,
+        percent: 12,
+      }));
+
+      try {
+        const entry = await getOrdersFromServerDb(scopeKey, { offset, limit: size });
+        const pageOrders = Array.isArray(entry?.orders) ? entry.orders : [];
+        const total = Number(entry?.total) || pageOrders.length;
+        const totalPages = Math.max(1, Math.ceil(total / size) || 1);
+        const itemFrom = total > 0 ? offset + 1 : 0;
+        const itemTo = total > 0 ? Math.min(offset + pageOrders.length, total) : 0;
+
+        resolvedServerScopeKeyRef.current = scopeKey;
+        serverKnownTotalRef.current = total;
+        setServerOrders(pageOrders);
+        setServerOrdersTotal(total);
+        setServerMeta({
+          fetchedAt: entry?.fetchedAt || null,
+          fetchedAtLabel: entry?.fetchedAt
+            ? formatFetchedAt(entry.fetchedAt)
+            : 'Brak zapisu na serwerze',
+        });
+
+        if (entry?.raw) {
+          setApiRaw(entry.raw);
+        }
+        if (entry?.meta) {
+          setApiMeta(entry.meta);
+        }
+
+        setServerLoadProgress({
+          visible: true,
+          label:
+            total > 0
+              ? `Załadowano produkty ${itemFrom}–${itemTo} z ${total}`
+              : 'Brak produktów na serwerze',
+          page: safePage,
+          totalPages,
+          itemFrom,
+          itemTo,
+          totalItems: total,
+          percent: 100,
+        });
+
+        window.setTimeout(() => {
+          setServerLoadPhase(null);
+          setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
+        }, 350);
+
+        return total;
+      } catch (err) {
+        setServerOrders([]);
+        setServerOrdersTotal(0);
+        setServerSyncError(err?.message || 'Nie udało się odczytać bazy serwerowej.');
+        setServerLoadPhase(null);
+        setServerLoadProgress(HIDDEN_SERVER_LOAD_PROGRESS);
+        return 0;
+      } finally {
+        setServerOrdersLoading(false);
+      }
+    },
+    [activeAccountId]
+  );
+
+  const applyResolvedServerMeta = useCallback((resolved) => {
+    if (!resolved?.scopeKey) {
+      return false;
     }
-  }, [activeAccountId, config, isConfigured]);
+
+    resolvedServerScopeKeyRef.current = resolved.scopeKey;
+    serverKnownTotalRef.current = Number(resolved.total) || 0;
+    setServerOrdersTotal(serverKnownTotalRef.current);
+    setServerMeta({
+      fetchedAt: resolved.fetchedAt || null,
+      fetchedAtLabel: resolved.fetchedAt
+        ? formatFetchedAt(resolved.fetchedAt)
+        : 'Brak zapisu na serwerze',
+    });
+    return true;
+  }, []);
+
+  const probeServerOrders = useCallback(async () => {
+    if (!activeAccountId) {
+      return null;
+    }
+
+    try {
+      const resolved = await resolveOrdersScopeFromDb(activeAccountId, getConfigHint(config));
+      if (!resolved?.scopeKey || !(Number(resolved.total) > 0)) {
+        return null;
+      }
+
+      applyResolvedServerMeta(resolved);
+      return resolved;
+    } catch (err) {
+      setServerSyncError(err?.message || 'Nie udało się sprawdzić bazy serwerowej.');
+      return null;
+    }
+  }, [activeAccountId, applyResolvedServerMeta, config]);
+
+  const handleConfirmServerLoad = useCallback(async () => {
+    if (!resolvedServerScopeKeyRef.current) {
+      const resolved = await probeServerOrders();
+      if (!resolved) {
+        setServerLoadPhase(null);
+        return;
+      }
+    }
+
+    serverLoadAcceptedRef.current = true;
+    setActiveSource('server');
+    setOrdersPage(1);
+    lastLoadedServerPageRef.current = {
+      page: 0,
+      size: ordersPageSize,
+      scope: resolvedServerScopeKeyRef.current,
+    };
+    await loadServerOrdersPage(1, ordersPageSize, resolvedServerScopeKeyRef.current);
+    lastLoadedServerPageRef.current = {
+      page: 1,
+      size: ordersPageSize,
+      scope: resolvedServerScopeKeyRef.current,
+    };
+  }, [loadServerOrdersPage, ordersPageSize, probeServerOrders]);
+
+  const handleDeclineServerLoad = useCallback(() => {
+    setServerLoadPhase(null);
+    if (savedOrders.length > 0) {
+      setActiveSource('saved');
+    }
+  }, [savedOrders.length]);
+
+  const openServerLoadPrompt = useCallback(() => {
+    if (serverOrdersTotal <= 0) {
+      return;
+    }
+    setServerLoadPhase('confirm');
+  }, [serverOrdersTotal]);
+
+  const handleSourceChange = useCallback(
+    (nextSource) => {
+      if (
+        nextSource === 'server' &&
+        serverOrdersTotal > 0 &&
+        !serverLoadAcceptedRef.current
+      ) {
+        openServerLoadPrompt();
+        return;
+      }
+      setActiveSource(nextSource);
+    },
+    [openServerLoadPrompt, serverOrdersTotal]
+  );
+
+  const mutateServerOrders = useCallback(
+    async (mutator, reloadPage = 1) => {
+      if (!activeAccountId) return;
+
+      const scopeKey = getServerScopeKey();
+      const full = await getOrdersFromServerDb(scopeKey);
+      const allOrders = Array.isArray(full?.orders) ? full.orders : [];
+      const nextOrders = mutator(allOrders);
+
+      await persistServerOrders(nextOrders);
+      setOrdersPage(reloadPage);
+      await loadServerOrdersPage(reloadPage, ordersPageSize, scopeKey);
+    },
+    [activeAccountId, getServerScopeKey, loadServerOrdersPage, ordersPageSize, persistServerOrders]
+  );
 
   useEffect(() => {
-    if (!accountReady || !configLoaded) return;
+    if (!accountReady || !configLoaded || !activeAccountId) return;
 
-    setBufferOrders([]);
-    setBufferMeta({ fetchedAt: null, fetchedAtLabel: 'Bufor pusty' });
-    setSelectedIds([]);
-    setFilters(EMPTY_FILTERS);
-    setError('');
+    const accountChanged = previousActiveAccountIdRef.current !== activeAccountId;
+    previousActiveAccountIdRef.current = activeAccountId;
+
+    if (accountChanged) {
+      serverLoadAcceptedRef.current = false;
+      resolvedServerScopeKeyRef.current = null;
+      serverKnownTotalRef.current = 0;
+      lastLoadedServerPageRef.current = { page: 0, size: 0, scope: null };
+      setServerLoadPhase(null);
+      setServerOrdersTotal(0);
+      setServerOrders([]);
+      setServerSyncError('');
+      setBufferOrders([]);
+      setBufferMeta({ fetchedAt: null, fetchedAtLabel: 'Bufor pusty' });
+      setSelectedIds([]);
+      setFilters(EMPTY_FILTERS);
+      setError('');
+      setOrdersPage(1);
+    }
+
     loadSavedFromCache();
-    loadServerOrders();
-  }, [accountReady, configLoaded, activeAccountId, config, loadSavedFromCache]);
+  }, [accountReady, configLoaded, activeAccountId, loadSavedFromCache]);
+
+  useEffect(() => {
+    if (!accountReady || !configLoaded || !activeAccountId) return;
+    if (serverLoadAcceptedRef.current) return;
+    if (
+      serverLoadPhaseRef.current === 'confirm' ||
+      serverLoadPhaseRef.current === 'loading'
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      const resolved = await probeServerOrders();
+      if (cancelled) return;
+
+      if (resolved?.scopeKey && Number(resolved.total) > 0) {
+        setServerLoadPhase('confirm');
+        return;
+      }
+
+      if (isConfigured && readOrdersCache(activeAccountId, config)) {
+        setActiveSource('saved');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    accountReady,
+    activeAccountId,
+    config,
+    configLoaded,
+    isConfigured,
+    probeServerOrders,
+  ]);
+
+  useEffect(() => {
+    if (!serverLoadAcceptedRef.current || activeSource !== 'server') return;
+
+    const scopeKey = resolvedServerScopeKeyRef.current;
+    if (!scopeKey) return;
+    if (
+      serverLoadPhaseRef.current === 'confirm' ||
+      serverLoadPhaseRef.current === 'loading'
+    ) {
+      return;
+    }
+
+    const last = lastLoadedServerPageRef.current;
+    if (last.page === ordersPage && last.size === ordersPageSize && last.scope === scopeKey) {
+      return;
+    }
+
+    lastLoadedServerPageRef.current = {
+      page: ordersPage,
+      size: ordersPageSize,
+      scope: scopeKey,
+    };
+    loadServerOrdersPage(ordersPage, ordersPageSize, scopeKey);
+  }, [activeSource, loadServerOrdersPage, ordersPage, ordersPageSize]);
 
   const updateSavedOrders = useCallback(
     (nextOrders) => {
@@ -253,15 +556,23 @@ function OrdersView() {
   const updateServerOrders = useCallback(
     async (nextOrders) => {
       if (!activeAccountId) return;
-      setServerOrders(nextOrders);
       try {
+        const scopeKey = getServerScopeKey();
+        serverLoadAcceptedRef.current = true;
         await persistServerOrders(nextOrders);
+        serverKnownTotalRef.current = nextOrders.length;
+        setServerOrdersTotal(nextOrders.length);
+        resolvedServerScopeKeyRef.current = scopeKey;
+        setOrdersPage(1);
+        lastLoadedServerPageRef.current = { page: 0, size: ordersPageSize, scope: scopeKey };
+        await loadServerOrdersPage(1, ordersPageSize, scopeKey);
+        lastLoadedServerPageRef.current = { page: 1, size: ordersPageSize, scope: scopeKey };
       } catch (err) {
         setServerSyncError(err?.message || 'Nie udało się zapisać na serwerze.');
         throw err;
       }
     },
-    [activeAccountId, persistServerOrders]
+    [activeAccountId, getServerScopeKey, loadServerOrdersPage, ordersPageSize, persistServerOrders]
   );
 
   useEffect(() => {
@@ -302,6 +613,8 @@ function OrdersView() {
     try {
       await persistServerOrders([]);
       setServerOrders([]);
+      setServerOrdersTotal(0);
+      setOrdersPage(1);
       setActiveSource((current) => {
         if (current === 'server' && bufferOrders.length > 0) return 'buffer';
         if (current === 'server' && savedOrders.length > 0) return 'saved';
@@ -359,17 +672,23 @@ function OrdersView() {
     setActiveSource('saved');
   }, [activeAccountId, apiMeta, apiRaw, applySavedCache, bufferOrders, config]);
 
-  const moveServerToBuffer = useCallback(() => {
-    if (serverOrders.length === 0) return;
+  const moveServerToBuffer = useCallback(async () => {
+    if (serverOrdersTotal === 0 || !activeAccountId) return;
+
+    const scopeKey = getServerScopeKey();
+    const full = await getOrdersFromServerDb(scopeKey);
+    const allOrders = Array.isArray(full?.orders) ? full.orders : [];
+    if (allOrders.length === 0) return;
+
     const fetchedAt = new Date().toISOString();
-    setBufferOrders([...serverOrders]);
+    setBufferOrders(allOrders);
     setBufferMeta({
       fetchedAt,
       fetchedAtLabel: formatFetchedAt(fetchedAt),
     });
-    setApiRaw(serverOrders);
+    setApiRaw(full?.raw ?? allOrders);
     setActiveSource('buffer');
-  }, [serverOrders]);
+  }, [activeAccountId, getServerScopeKey, serverOrdersTotal]);
 
   const moveBufferToServer = useCallback(async () => {
     if (!activeAccountId || bufferOrders.length === 0) return;
@@ -384,21 +703,26 @@ function OrdersView() {
   }, [activeAccountId, savedOrders, updateServerOrders]);
 
   const moveServerToSaved = useCallback(async () => {
-    if (!activeAccountId || serverOrders.length === 0) return;
+    if (!activeAccountId || serverOrdersTotal === 0) return;
+
+    const scopeKey = getServerScopeKey();
+    const full = await getOrdersFromServerDb(scopeKey);
+    const allOrders = Array.isArray(full?.orders) ? full.orders : [];
+    if (allOrders.length === 0) return;
 
     const payload = {
-      orders: serverOrders,
-      raw: apiRaw ?? serverOrders,
-      meta: apiMeta,
+      orders: allOrders,
+      raw: full?.raw ?? apiRaw ?? allOrders,
+      meta: full?.meta ?? apiMeta,
     };
     const saved = writeOrdersCache(activeAccountId, config, payload);
 
-    setSavedOrders(serverOrders);
+    setSavedOrders(allOrders);
     if (saved) {
       applySavedCache(saved);
     }
     setActiveSource('saved');
-  }, [activeAccountId, apiMeta, apiRaw, applySavedCache, config, serverOrders]);
+  }, [activeAccountId, apiMeta, apiRaw, applySavedCache, getServerScopeKey, serverOrdersTotal]);
 
   const removeFromSelection = useCallback((keys) => {
     const keySet = new Set(Array.isArray(keys) ? keys : [keys]);
@@ -419,12 +743,16 @@ function OrdersView() {
       }
 
       if (activeSource === 'server') {
-        updateServerOrders(excludeOrdersByKeys(serverOrders, keySet));
+        mutateServerOrders((all) => excludeOrdersByKeys(all, keySet), ordersPage).catch(
+          (err) => {
+            setServerSyncError(err?.message || 'Nie udało się usunąć zamówień na serwerze.');
+          }
+        );
       }
 
       removeFromSelection([...keySet]);
     },
-    [activeSource, removeFromSelection, savedOrders, updateSavedOrders]
+    [activeSource, mutateServerOrders, ordersPage, removeFromSelection, savedOrders, updateSavedOrders]
   );
 
   const moveSelectedToSaved = useCallback(() => {
@@ -440,12 +768,22 @@ function OrdersView() {
     }
 
     if (activeSource === 'server') {
-      updateServerOrders(excludeOrdersByKeys(serverOrders, keySet));
+      mutateServerOrders((all) => excludeOrdersByKeys(all, keySet), ordersPage).catch((err) => {
+        setServerSyncError(err?.message || 'Nie udało się przenieść zamówień.');
+      });
     }
 
     setSelectedIds([]);
     setActiveSource('saved');
-  }, [activeSource, orders, savedOrders, selectedIds, updateSavedOrders]);
+  }, [
+    activeSource,
+    mutateServerOrders,
+    orders,
+    ordersPage,
+    savedOrders,
+    selectedIds,
+    updateSavedOrders,
+  ]);
 
   const moveSelectedToBuffer = useCallback(() => {
     const keySet = new Set(selectedIds);
@@ -464,12 +802,22 @@ function OrdersView() {
     }
 
     if (activeSource === 'server') {
-      updateServerOrders(excludeOrdersByKeys(serverOrders, keySet));
+      mutateServerOrders((all) => excludeOrdersByKeys(all, keySet), ordersPage).catch((err) => {
+        setServerSyncError(err?.message || 'Nie udało się przenieść zamówień.');
+      });
     }
 
     setSelectedIds([]);
     setActiveSource('buffer');
-  }, [activeSource, orders, savedOrders, selectedIds, updateSavedOrders]);
+  }, [
+    activeSource,
+    mutateServerOrders,
+    orders,
+    ordersPage,
+    savedOrders,
+    selectedIds,
+    updateSavedOrders,
+  ]);
 
   const openBulkDownload = useCallback(() => {
     if (!isConfigured) return;
@@ -715,17 +1063,25 @@ function OrdersView() {
     [orders, filters]
   );
 
-  const ordersTotalPages = useMemo(
-    () => Math.max(1, Math.ceil(filteredOrders.length / ordersPageSize) || 1),
-    [filteredOrders.length, ordersPageSize]
-  );
+  const ordersTotalPages = useMemo(() => {
+    if (activeSource === 'server') {
+      return Math.max(1, Math.ceil(serverOrdersTotal / ordersPageSize) || 1);
+    }
+    return Math.max(1, Math.ceil(filteredOrders.length / ordersPageSize) || 1);
+  }, [activeSource, filteredOrders.length, ordersPageSize, serverOrdersTotal]);
 
   const safeOrdersPage = Math.min(Math.max(ordersPage, 1), ordersTotalPages);
 
+  const paginationTotalItems =
+    activeSource === 'server' ? serverOrdersTotal : filteredOrders.length;
+
   const paginatedOrders = useMemo(() => {
+    if (activeSource === 'server') {
+      return filterOrders(serverOrders, filters);
+    }
     const start = (safeOrdersPage - 1) * ordersPageSize;
     return filteredOrders.slice(start, start + ordersPageSize);
-  }, [filteredOrders, ordersPageSize, safeOrdersPage]);
+  }, [activeSource, filters, filteredOrders, ordersPageSize, safeOrdersPage, serverOrders]);
 
   useEffect(() => {
     setOrdersPage(1);
@@ -822,7 +1178,7 @@ function OrdersView() {
       ...syncInfo,
       savedCount: savedOrders.length,
       bufferCount: bufferOrders.length,
-      serverCount: serverOrders.length,
+      serverCount: serverOrdersTotal,
       bufferFetchedAtLabel: bufferMeta.fetchedAtLabel,
       bufferHasData: bufferOrders.length > 0,
       activeSource,
@@ -836,7 +1192,7 @@ function OrdersView() {
       storageScope: activeAccount
         ? `${getAccessAccountDisplayName(activeAccount)} · ${isDemoMode ? 'demo' : (config.account || 'brak').trim().toLowerCase()}`
         : '—',
-      serverHasData: serverOrders.length > 0,
+      serverHasData: serverOrdersTotal > 0,
       serverFetchedAtLabel: serverMeta.fetchedAtLabel,
       serverSyncError,
       bulkDownloading,
@@ -849,6 +1205,7 @@ function OrdersView() {
       savedOrders.length,
       bufferOrders.length,
       serverOrders.length,
+      serverOrdersTotal,
       serverMeta.fetchedAtLabel,
       serverSyncError,
       bufferMeta.fetchedAtLabel,
@@ -865,6 +1222,20 @@ function OrdersView() {
 
   return (
     <>
+      <ServerOrdersLoadOverlay
+        phase={serverLoadPhase}
+        totalItems={serverOrdersTotal}
+        label={serverLoadProgress.label}
+        page={serverLoadProgress.page}
+        totalPages={serverLoadProgress.totalPages}
+        itemFrom={serverLoadProgress.itemFrom}
+        itemTo={serverLoadProgress.itemTo}
+        percent={serverLoadProgress.percent}
+        loading={serverOrdersLoading}
+        onConfirm={handleConfirmServerLoad}
+        onDecline={handleDeclineServerLoad}
+      />
+
       <PageShell
         title="Zamówienia Sellasist"
         fullWidth
@@ -903,8 +1274,8 @@ function OrdersView() {
                   activeSource={activeSource}
                   savedCount={savedOrders.length}
                   bufferCount={bufferOrders.length}
-                  serverCount={serverOrders.length}
-                  onChange={setActiveSource}
+                  serverCount={serverOrdersTotal}
+                  onChange={handleSourceChange}
                 />
 
                 {activeSource === 'saved' && (
@@ -921,7 +1292,9 @@ function OrdersView() {
                 {activeSource === 'server' && (
                   <p className="text-xs text-slate-500">
                     Widok: baza danych (serwer)
-                    {serverOrders.length > 0 && ` · ostatni zapis: ${serverMeta.fetchedAtLabel}`}
+                    {serverOrdersTotal > 0 && ` · ostatni zapis: ${serverMeta.fetchedAtLabel}`}
+                    {serverOrdersTotal > 0 &&
+                      ` · ${serverOrdersTotal} na serwerze, strona ${safeOrdersPage}/${ordersTotalPages}`}
                   </p>
                 )}
                 {serverSyncError && (
@@ -936,11 +1309,20 @@ function OrdersView() {
                   </div>
                 )}
 
-                {bulkDownloading && orders.length === 0 && (
-                  <p className="text-sm text-slate-500 text-center py-12">Ładowanie zamówień…</p>
+                {((activeSource === 'server' && serverOrdersLoading && serverLoadPhase === 'loading') ||
+                  (bulkDownloading && orders.length === 0)) && (
+                  <p className="text-sm text-slate-500 text-center py-12">
+                    {activeSource === 'server'
+                      ? 'Ładowanie zamówień z serwera…'
+                      : 'Ładowanie zamówień…'}
+                  </p>
                 )}
 
-                {!bulkDownloading && orders.length === 0 && !error && (
+                {!bulkDownloading &&
+                  !(activeSource === 'server' && serverOrdersLoading) &&
+                  orders.length === 0 &&
+                  !(activeSource === 'server' && serverOrdersTotal > 0) &&
+                  !error && (
                   <p className="text-sm text-slate-400 text-center py-12 rounded-3xl border border-dashed border-slate-200">
                     {activeSource === 'saved'
                       ? 'Baza lokalna jest pusta. Użyj „Pobierz z Sellasist” i zapisz dane.'
@@ -957,7 +1339,7 @@ function OrdersView() {
                   </p>
                 )}
 
-                {filteredOrders.length > 0 && (
+                {paginatedOrders.length > 0 && (
                   <OrdersSelectionBar
                     selectedCount={selectedIds.length}
                     visibleCount={visibleOrderKeys.length}
@@ -988,11 +1370,11 @@ function OrdersView() {
                   })}
                 </div>
 
-                {filteredOrders.length > 0 && (
+                {paginationTotalItems > 0 && (
                   <OrdersPagination
                     page={safeOrdersPage}
                     pageSize={ordersPageSize}
-                    totalItems={filteredOrders.length}
+                    totalItems={paginationTotalItems}
                     onPageChange={setOrdersPage}
                   />
                 )}
@@ -1012,8 +1394,10 @@ function OrdersView() {
                   onChange={setFilters}
                   statuses={statuses}
                   onResetFilters={() => setFilters(EMPTY_FILTERS)}
-                  filteredCount={filteredOrders.length}
-                  totalCount={orders.length}
+                  filteredCount={
+                    activeSource === 'server' ? paginatedOrders.length : filteredOrders.length
+                  }
+                  totalCount={activeSource === 'server' ? serverOrdersTotal : orders.length}
                 />
               </div>
 
@@ -1063,19 +1447,19 @@ function OrdersView() {
           moveBufferToLocal: moveBufferToSaved,
           moveBufferToLocalDisabled: bulkDownloading || bufferOrders.length === 0,
           moveServerToBuffer,
-          moveServerToBufferDisabled: bulkDownloading || serverOrders.length === 0,
+          moveServerToBufferDisabled: bulkDownloading || serverOrdersTotal === 0,
           moveBufferToServer,
           moveBufferToServerDisabled: bulkDownloading || bufferOrders.length === 0,
           moveLocalToServer: moveSavedToServer,
           moveLocalToServerDisabled: bulkDownloading || savedOrders.length === 0,
           moveServerToLocal: moveServerToSaved,
-          moveServerToLocalDisabled: bulkDownloading || serverOrders.length === 0,
+          moveServerToLocalDisabled: bulkDownloading || serverOrdersTotal === 0,
           clearBuffer,
           clearBufferDisabled: bufferOrders.length === 0,
           clearLocal: clearDatabase,
           clearLocalDisabled: savedOrders.length === 0 && !syncInfo.savedLocally,
           clearServer: clearServerDatabase,
-          clearServerDisabled: serverOrders.length === 0,
+          clearServerDisabled: serverOrdersTotal === 0,
         }}
       />
 

@@ -1,6 +1,16 @@
 const { handleOptions, rejectMethod, jsonResponse } = require('../lib/api');
 const { isDefaultAdminCredentials } = require('../lib/defaultAdmin');
-const { readJson, writeJson, deleteJson, getScopedKey } = require('../lib/db');
+const {
+  readJson,
+  writeJson,
+  deleteJson,
+  getScopedKey,
+  findOrderStoreEntries,
+  findOrderStoreEntriesByPayloadAccount,
+  findAllOrderStoreEntries,
+  pickBestOrderEntry,
+  entryToScopeData,
+} = require('../lib/db');
 
 module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') {
@@ -49,13 +59,101 @@ module.exports = async function handler(req, res) {
       return jsonResponse(res, 200, { ok: true });
     }
 
+    if (action === 'resolve_orders_scope') {
+      const accessAccountId = String(body.accessAccountId || '').trim();
+      if (!accessAccountId) {
+        return jsonResponse(res, 400, { error: 'Brak accessAccountId' });
+      }
+
+      const configHint = String(body.configHint || '').trim().toLowerCase();
+      if (configHint) {
+        const preferredScopeKey = `${accessAccountId}::${configHint}`;
+        const preferredEntry = await readJson(getScopedKey('orders', preferredScopeKey), null);
+        if (preferredEntry) {
+          const orders = Array.isArray(preferredEntry.orders) ? preferredEntry.orders : [];
+          return jsonResponse(res, 200, {
+            ok: true,
+            data: {
+              scopeKey: preferredScopeKey,
+              total: orders.length,
+              fetchedAt: preferredEntry.fetchedAt || null,
+              account: preferredEntry.account || '',
+              useDemoData: Boolean(preferredEntry.useDemoData),
+            },
+          });
+        }
+      }
+
+      let entries = await findOrderStoreEntries(accessAccountId);
+      let best = pickBestOrderEntry(entries, accessAccountId);
+
+      if (!best) {
+        entries = await findOrderStoreEntriesByPayloadAccount(accessAccountId);
+        best = pickBestOrderEntry(entries, accessAccountId);
+      }
+
+      if (!best) {
+        entries = await findAllOrderStoreEntries();
+        best = pickBestOrderEntry(entries, accessAccountId);
+      }
+
+      if (!best) {
+        return jsonResponse(res, 200, { ok: true, data: null });
+      }
+
+      return jsonResponse(res, 200, {
+        ok: true,
+        data: entryToScopeData(best),
+      });
+    }
+
+    if (action === 'list_orders_scopes') {
+      const entries = await findAllOrderStoreEntries();
+      const data = entries
+        .map((entry) => entryToScopeData(entry))
+        .filter((item) => item.total > 0);
+
+      return jsonResponse(res, 200, { ok: true, data });
+    }
+
     if (action === 'get_orders') {
       const scopeKey = String(body.scopeKey || '').trim();
       if (!scopeKey) {
         return jsonResponse(res, 400, { error: 'Brak scopeKey' });
       }
-      const data = await readJson(getScopedKey('orders', scopeKey), null);
-      return jsonResponse(res, 200, { ok: true, data });
+      const entry = await readJson(getScopedKey('orders', scopeKey), null);
+      if (!entry) {
+        return jsonResponse(res, 200, { ok: true, data: null });
+      }
+
+      const allOrders = Array.isArray(entry.orders) ? entry.orders : [];
+      const total = allOrders.length;
+      const hasPaging = body.offset !== undefined || body.limit !== undefined;
+
+      if (hasPaging) {
+        const offset = Math.max(0, Number(body.offset) || 0);
+        const limit = Math.max(1, Math.min(Number(body.limit) || 25, 100));
+        const orders = allOrders.slice(offset, offset + limit);
+        return jsonResponse(res, 200, {
+          ok: true,
+          data: {
+            ...entry,
+            orders,
+            total,
+            offset,
+            limit,
+            paginated: total > limit || offset > 0,
+          },
+        });
+      }
+
+      return jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          ...entry,
+          total,
+        },
+      });
     }
 
     if (action === 'set_orders') {
