@@ -3,7 +3,7 @@ import {
   createAccessAccount,
   deleteAccessAccount,
   ensureDefaultAccessAccount,
-  getActiveAccessAccount,
+  getAccessStoreSnapshot,
   readAccessAccountsStore,
   setActiveAccessAccount,
   updateAccessAccount,
@@ -15,25 +15,45 @@ import { useAuth } from './AuthContext';
 
 const AccessAccountContext = createContext(null);
 
+function formatSyncedAt(iso) {
+  if (!iso) return 'Brak zapisu na serwerze';
+  try {
+    return new Date(iso).toLocaleString('pl-PL');
+  } catch (_e) {
+    return iso;
+  }
+}
+
 export function AccessAccountProvider({ children }) {
   const { user } = useAuth();
   const [store, setStore] = useState({ accounts: [], activeId: null });
   const [ready, setReady] = useState(false);
+  const [serverSyncing, setServerSyncing] = useState(false);
+  const [serverSyncError, setServerSyncError] = useState('');
+  const [serverSyncedAt, setServerSyncedAt] = useState(null);
+  const [serverAccountCount, setServerAccountCount] = useState(0);
 
   const refresh = useCallback(() => {
     setStore(readAccessAccountsStore());
   }, []);
 
-  const syncCurrentStoreToDb = useCallback(async () => {
-    const local = readAccessAccountsStore();
+  const persistAccessStoreToServer = useCallback(async () => {
+    const snapshot = getAccessStoreSnapshot();
+    setServerSyncing(true);
+    setServerSyncError('');
+
     try {
-      await setAccessStoreToDb({
-        accounts: local.accounts,
-        activeId: local.activeId,
-        users: {},
-      });
-    } catch (_e) {
-      // brak blokady UI — traktujemy DB jako źródło docelowe, ale nie przerywamy pracy offline
+      const result = await setAccessStoreToDb(snapshot);
+      const syncedAt = result?.syncedAt || snapshot.syncedAt || new Date().toISOString();
+      setServerSyncedAt(syncedAt);
+      setServerAccountCount(snapshot.accounts.length);
+      return true;
+    } catch (err) {
+      const message = err?.message || 'Nie udało się zapisać kont na serwerze.';
+      setServerSyncError(message);
+      throw err;
+    } finally {
+      setServerSyncing(false);
     }
   }, []);
 
@@ -43,22 +63,38 @@ export function AccessAccountProvider({ children }) {
     const bootstrap = async () => {
       if (!user) {
         setStore({ accounts: [], activeId: null });
+        setServerSyncError('');
+        setServerSyncedAt(null);
+        setServerAccountCount(0);
         setReady(true);
         return;
       }
 
+      setReady(false);
+      setServerSyncError('');
+
+      let serverStore = null;
       try {
-        const dbStore = await getAccessStoreFromDb();
-        if (
-          mounted &&
-          dbStore &&
-          Array.isArray(dbStore.accounts) &&
-          dbStore.accounts.length > 0
-        ) {
-          writeAccessStoreSnapshot(dbStore);
+        serverStore = await getAccessStoreFromDb();
+        if (mounted && serverStore) {
+          const remoteAccounts = Array.isArray(serverStore.accounts) ? serverStore.accounts : [];
+          setServerAccountCount(remoteAccounts.length);
+          if (serverStore.syncedAt) {
+            setServerSyncedAt(serverStore.syncedAt);
+          }
+
+          if (remoteAccounts.length > 0) {
+            writeAccessStoreSnapshot({
+              accounts: serverStore.accounts,
+              activeId: serverStore.activeId,
+              users: serverStore.users,
+            });
+          }
         }
-      } catch (_e) {
-        // fallback lokalny
+      } catch (err) {
+        if (mounted) {
+          setServerSyncError(err?.message || 'Nie udało się odczytać kont z serwera.');
+        }
       }
 
       ensureDefaultAccessAccount();
@@ -73,16 +109,26 @@ export function AccessAccountProvider({ children }) {
         }
       }
 
-      refresh();
-      setReady(true);
-      syncCurrentStoreToDb();
+      if (mounted) {
+        refresh();
+      }
+
+      try {
+        await persistAccessStoreToServer();
+      } catch (_e) {
+        // błąd już w stanie UI
+      }
+
+      if (mounted) {
+        setReady(true);
+      }
     };
 
     bootstrap();
     return () => {
       mounted = false;
     };
-  }, [user, refresh, syncCurrentStoreToDb]);
+  }, [user, refresh, persistAccessStoreToServer]);
 
   const activeAccount = useMemo(
     () => store.accounts.find((item) => item.id === store.activeId) || null,
@@ -90,10 +136,14 @@ export function AccessAccountProvider({ children }) {
   );
 
   const selectAccount = useCallback(
-    (accessAccountId) => {
+    async (accessAccountId) => {
       const account = setActiveAccessAccount(accessAccountId);
       refresh();
-      syncCurrentStoreToDb();
+      try {
+        await persistAccessStoreToServer();
+      } catch (_e) {
+        // błąd w stanie UI
+      }
       logEvent({
         level: 'info',
         category: 'account',
@@ -103,14 +153,14 @@ export function AccessAccountProvider({ children }) {
       });
       return account;
     },
-    [refresh, syncCurrentStoreToDb]
+    [refresh, persistAccessStoreToServer]
   );
 
   const createAccount = useCallback(
-    ({ name, username, password }) => {
+    async ({ name, username, password }) => {
       const account = createAccessAccount({ name, username, password });
       refresh();
-      syncCurrentStoreToDb();
+      await persistAccessStoreToServer();
       logEvent({
         level: 'info',
         category: 'account',
@@ -120,14 +170,14 @@ export function AccessAccountProvider({ children }) {
       });
       return account;
     },
-    [refresh, syncCurrentStoreToDb]
+    [refresh, persistAccessStoreToServer]
   );
 
   const updateAccount = useCallback(
-    (accessAccountId, payload) => {
+    async (accessAccountId, payload) => {
       const account = updateAccessAccount(accessAccountId, payload);
       refresh();
-      syncCurrentStoreToDb();
+      await persistAccessStoreToServer();
       logEvent({
         level: 'info',
         category: 'account',
@@ -142,15 +192,15 @@ export function AccessAccountProvider({ children }) {
       });
       return account;
     },
-    [refresh, syncCurrentStoreToDb]
+    [refresh, persistAccessStoreToServer]
   );
 
   const deleteAccount = useCallback(
-    (accessAccountId) => {
+    async (accessAccountId) => {
       const before = readAccessAccountsStore().accounts.find((item) => item.id === accessAccountId);
       const result = deleteAccessAccount(accessAccountId);
       refresh();
-      syncCurrentStoreToDb();
+      await persistAccessStoreToServer();
       logEvent({
         level: 'warn',
         category: 'account',
@@ -164,7 +214,7 @@ export function AccessAccountProvider({ children }) {
       });
       return result;
     },
-    [refresh, syncCurrentStoreToDb]
+    [refresh, persistAccessStoreToServer]
   );
 
   const value = useMemo(
@@ -178,8 +228,27 @@ export function AccessAccountProvider({ children }) {
       updateAccount,
       deleteAccount,
       refresh,
+      serverSyncing,
+      serverSyncError,
+      serverSyncedAt,
+      serverSyncedAtLabel: formatSyncedAt(serverSyncedAt),
+      serverAccountCount,
+      serverHasData: serverAccountCount > 0,
     }),
-    [ready, store, activeAccount, selectAccount, createAccount, updateAccount, deleteAccount, refresh]
+    [
+      ready,
+      store,
+      activeAccount,
+      selectAccount,
+      createAccount,
+      updateAccount,
+      deleteAccount,
+      refresh,
+      serverSyncing,
+      serverSyncError,
+      serverSyncedAt,
+      serverAccountCount,
+    ]
   );
 
   return (

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Link, navigate } from 'gatsby';
+import { AccountsSyncPanel } from '../components/AccountsSyncPanel';
 import { BackToPanelLink, PageShell, RequireAuth } from '../components/Layout';
 import { ButtonLabel } from '../components/ButtonLabel';
 import { IconDatabase, IconTrash } from '../components/Icons';
@@ -14,12 +15,12 @@ function AccountEditForm({ account, onSave, onCancel }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
 
     try {
-      onSave({
+      await onSave({
         name,
         username,
         password: password || undefined,
@@ -105,6 +106,11 @@ function AccountsView() {
     createAccount,
     updateAccount,
     deleteAccount,
+    serverSyncing,
+    serverSyncError,
+    serverSyncedAtLabel,
+    serverAccountCount,
+    serverHasData,
   } = useAccessAccount();
 
   const [name, setName] = useState('');
@@ -129,39 +135,43 @@ function AccountsView() {
     window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(payload));
   };
 
-  const handleCreateAccount = (e) => {
+  const handleCreateAccount = async (e) => {
     e.preventDefault();
     setError('');
     setMessage('');
 
     try {
-      const account = createAccount({ name, username, password });
+      const account = await createAccount({ name, username, password });
       setName('');
       setUsername('');
       setPassword('');
       setMessage(
-        `Utworzono konto: ${getAccessAccountDisplayName(account)} (login: ${account.username})`
+        `Utworzono konto i zapisano na serwerze: ${getAccessAccountDisplayName(account)} (login: ${account.username})`
       );
     } catch (err) {
       setError(err.message);
     }
   };
 
-  const handleSaveEdit = (accountId, payload) => {
+  const handleSaveEdit = async (accountId, payload) => {
     const original = accounts.find((item) => item.id === accountId);
     const wasLoggedInAs =
       user?.accessAccountId === accountId || user?.username === original?.username;
 
-    const updated = updateAccount(accountId, payload);
-    setEditingId(null);
-    setMessage(`Zaktualizowano konto: ${getAccessAccountDisplayName(updated)}`);
+    try {
+      const updated = await updateAccount(accountId, payload);
+      setEditingId(null);
+      setMessage(`Zaktualizowano konto i zapisano na serwerze: ${getAccessAccountDisplayName(updated)}`);
 
-    if (wasLoggedInAs) {
-      syncLoggedUser(updated);
+      if (wasLoggedInAs) {
+        syncLoggedUser(updated);
+      }
+    } catch (err) {
+      setError(err.message);
     }
   };
 
-  const handleDeleteAccount = (account) => {
+  const handleDeleteAccount = async (account) => {
     const label = getAccessAccountDisplayName(account);
     const confirmed = window.confirm(
       `Usunąć konto „${label}”?\n\nTej operacji nie można cofnąć. Konfiguracja i zamówienia tego konta pozostaną w pamięci przeglądarki / na serwerze pod starym identyfikatorem.`
@@ -174,7 +184,7 @@ function AccountsView() {
 
     try {
       const isOwnAccount = user?.username === account.username;
-      deleteAccount(account.id);
+      await deleteAccount(account.id);
 
       if (isOwnAccount) {
         logout();
@@ -186,7 +196,7 @@ function AccountsView() {
         setEditingId(null);
       }
 
-      setMessage(`Usunięto konto: ${label}`);
+      setMessage(`Usunięto konto i zaktualizowano serwer: ${label}`);
     } catch (err) {
       setError(err.message);
     }
@@ -210,6 +220,15 @@ function AccountsView() {
             </p>
           )}
         </section>
+
+        <AccountsSyncPanel
+          localCount={accounts.length}
+          serverAccountCount={serverAccountCount}
+          serverHasData={serverHasData}
+          serverSyncedAtLabel={serverSyncedAtLabel}
+          serverSyncing={serverSyncing}
+          serverSyncError={serverSyncError}
+        />
 
         <form
           onSubmit={handleCreateAccount}

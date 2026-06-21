@@ -62,7 +62,8 @@ export async function getAccessStoreFromDb() {
 }
 
 export async function setAccessStoreToDb(payload) {
-  await callAppDb('set_access', { payload });
+  const result = await callAppDb('set_access', { payload });
+  return result?.data || null;
 }
 
 export async function getSellasistConfigFromDb(accessAccountId) {

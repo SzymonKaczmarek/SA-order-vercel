@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   findAccessAccountByCredentials,
   setActiveAccessAccount,
+  writeAccessStoreSnapshot,
 } from '../data/accessAccounts';
-import { USERS } from '../data/users';
+import { USERS, defaultAdminAuthPayload } from '../data/users';
+import { getAccessStoreFromDb } from '../hooks/useAppDbApi';
 import { logEvent } from '../utils/eventLog';
 
 const STORAGE_KEY = 'saor_logged_user';
@@ -17,6 +19,37 @@ function getBaseUrl() {
 
 function findAccessAccountUser(username, password) {
   return findAccessAccountByCredentials(username, password);
+}
+
+function accountToLoginPayload(account) {
+  return {
+    username: account.username,
+    role: account.role || 'user',
+    firstName: account.name || account.username,
+    lastName: '',
+    email: account.email || account.username,
+    accessAccountId: account.id,
+  };
+}
+
+async function findAccountOnServer(username, password) {
+  const trimmed = String(username || '').trim();
+  const store = await getAccessStoreFromDb();
+  const accounts = Array.isArray(store?.accounts) ? store.accounts : [];
+  const account = accounts.find(
+    (item) => item.username === trimmed && item.password === password
+  );
+  if (!account) {
+    return null;
+  }
+
+  writeAccessStoreSnapshot({
+    accounts: store.accounts,
+    activeId: account.id,
+    users: store.users,
+  });
+
+  return accountToLoginPayload(account);
 }
 
 function persistLoggedUser(payload) {
@@ -64,6 +97,18 @@ export function useAuthInternal() {
       if (res.ok && data.username) {
         if (data.accessAccountId) {
           setActiveAccessAccount(data.accessAccountId);
+          try {
+            const store = await getAccessStoreFromDb();
+            if (store && Array.isArray(store.accounts) && store.accounts.length > 0) {
+              writeAccessStoreSnapshot({
+                accounts: store.accounts,
+                activeId: data.accessAccountId,
+                users: store.users,
+              });
+            }
+          } catch (_e) {
+            // bootstrap uzupełni po zalogowaniu
+          }
         }
 
         const payload = {
@@ -86,7 +131,7 @@ export function useAuthInternal() {
         return true;
       }
 
-      if (res.status === 401 || res.status === 400) {
+      if (res.status === 400) {
         logEvent({
           level: 'warn',
           category: 'auth',
@@ -97,8 +142,67 @@ export function useAuthInternal() {
         setError(data.error || 'Nieprawidłowy login lub hasło.');
         return false;
       }
+
+      if (!res.ok) {
+        try {
+          const serverAccount = await findAccountOnServer(username, password);
+          if (serverAccount) {
+            setActiveAccessAccount(serverAccount.accessAccountId);
+            persistLoggedUser(serverAccount);
+            setUser(serverAccount);
+            logEvent({
+              level: 'info',
+              category: 'auth',
+              action: 'auth.login.success',
+              message: `Logowanie (baza serwerowa): ${serverAccount.username}`,
+              details: {
+                role: serverAccount.role,
+                accessAccountId: serverAccount.accessAccountId,
+              },
+            });
+            return true;
+          }
+        } catch (_serverErr) {
+          // próbujemy dalej lokalnie
+        }
+      }
     } catch (_e) {
-      // API niedostępne – fallback lokalny
+      // API niedostępne – fallback lokalny / serwerowy
+      try {
+        const serverAccount = await findAccountOnServer(username, password);
+        if (serverAccount) {
+          setActiveAccessAccount(serverAccount.accessAccountId);
+          persistLoggedUser(serverAccount);
+          setUser(serverAccount);
+          logEvent({
+            level: 'info',
+            category: 'auth',
+            action: 'auth.login.success',
+            message: `Logowanie (baza serwerowa): ${serverAccount.username}`,
+            details: {
+              role: serverAccount.role,
+              accessAccountId: serverAccount.accessAccountId,
+            },
+          });
+          return true;
+        }
+      } catch (_serverErr) {
+        // fallback lokalny poniżej
+      }
+    }
+
+    const adminPayload = defaultAdminAuthPayload(username, password);
+    if (adminPayload) {
+      persistLoggedUser(adminPayload);
+      setUser(adminPayload);
+      logEvent({
+        level: 'info',
+        category: 'auth',
+        action: 'auth.login.success',
+        message: `Logowanie (admin): ${adminPayload.username}`,
+        details: { role: adminPayload.role },
+      });
+      return true;
     }
 
     const found = USERS.find(

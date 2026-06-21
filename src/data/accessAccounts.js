@@ -22,22 +22,29 @@ function readLegacyUsersMap() {
 }
 
 function migrateLegacyAccountCredentials(account, usersMap) {
-  if (account.username && account.password) {
-    return account;
+  let next = account;
+
+  if (!next.username || !next.password) {
+    const legacyUsers = Array.isArray(usersMap[account.id]) ? usersMap[account.id] : [];
+    if (legacyUsers.length > 0) {
+      const primary = legacyUsers[0];
+      next = {
+        ...next,
+        username: String(primary.username || '').trim(),
+        password: String(primary.password || ''),
+        email: String(primary.email || account.email || '').trim(),
+      };
+    }
   }
 
-  const legacyUsers = Array.isArray(usersMap[account.id]) ? usersMap[account.id] : [];
-  if (legacyUsers.length === 0) {
-    return account;
+  if (
+    next.username === 'szym.kaczmarek@gmail.com' &&
+    next.password === DEFAULT_USER.password
+  ) {
+    next = { ...next, username: DEFAULT_USER.username };
   }
 
-  const primary = legacyUsers[0];
-  return {
-    ...account,
-    username: String(primary.username || '').trim(),
-    password: String(primary.password || ''),
-    email: String(primary.email || account.email || '').trim(),
-  };
+  return next;
 }
 
 function migrateAccountsStore(store) {
@@ -46,7 +53,7 @@ function migrateAccountsStore(store) {
 
   const accounts = store.accounts.map((account) => {
     const migrated = migrateLegacyAccountCredentials(account, usersMap);
-    if (migrated !== account) {
+    if (JSON.stringify(migrated) !== JSON.stringify(account)) {
       changed = true;
     }
     return migrated;
@@ -110,6 +117,16 @@ export function writeAccessStoreSnapshot({ accounts, activeId, users }) {
 export function readAccessUsersMap() {
   if (typeof window === 'undefined') return {};
   return safeParse(window.localStorage.getItem(USERS_KEY), {});
+}
+
+export function getAccessStoreSnapshot() {
+  const store = readAccessAccountsStore();
+  return {
+    accounts: store.accounts,
+    activeId: store.activeId,
+    users: readAccessUsersMap(),
+    syncedAt: new Date().toISOString(),
+  };
 }
 
 export function getActiveAccessAccount() {
