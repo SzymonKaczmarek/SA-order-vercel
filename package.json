@@ -5,11 +5,14 @@
   "scripts": {
     "develop": "gatsby develop",
     "gatsby:dev": "gatsby develop",
+    "dev:vercel": "vercel dev",
+    "db:migrate": "node scripts/db-migrate.js",
     "build": "gatsby build",
     "serve": "gatsby serve",
     "clean": "gatsby clean"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.0.0",
     "gatsby": "^5.16.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

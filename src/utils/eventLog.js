@@ -110,7 +110,7 @@ function notifyListeners(entry) {
 }
 
 async function appendEventLogToServer(entry) {
-  const res = await fetch(`${getBaseUrl()}/.netlify/functions/app-db`, {
+  const res = await fetch(`${getBaseUrl()}/api/app-db`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'append_event_log', entry }),
@@ -132,7 +132,7 @@ export function readLocalEventLogs() {
 }
 
 export async function fetchEventLogsFromServer() {
-  const res = await fetch(`${getBaseUrl()}/.netlify/functions/app-db`, {
+  const res = await fetch(`${getBaseUrl()}/api/app-db`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'get_event_logs' }),
@@ -149,7 +149,7 @@ export async function fetchEventLogsFromServer() {
 export async function clearAllEventLogs({ adminUsername, adminPassword } = {}) {
   writeLocalEntries([]);
 
-  const res = await fetch(`${getBaseUrl()}/.netlify/functions/app-db`, {
+  const res = await fetch(`${getBaseUrl()}/api/app-db`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

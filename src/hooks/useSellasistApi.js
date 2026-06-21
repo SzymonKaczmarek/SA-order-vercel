@@ -22,7 +22,7 @@ function buildConfig(config) {
   };
 }
 
-function normalizeNetlifyFetchError(err, path) {
+function normalizeApiFetchError(err, path) {
   const msg = String(err?.message || err || '');
 
   if (err?.name === 'AbortError' || /abort|anulow|terminated/i.test(msg)) {
@@ -33,16 +33,16 @@ function normalizeNetlifyFetchError(err, path) {
     const port = typeof window !== 'undefined' ? window.location.port : '';
     const hint =
       port === '8000'
-        ? ' Uruchom npm run dev:netlify i wejdź na http://localhost:8888 (port 8000 nie ma funkcji Netlify).'
-        : ' Sprawdź połączenie i logi Netlify (timeout funkcji ~10 s na darmowym planie).';
-    return new Error(`Brak połączenia z funkcją Netlify (${path}).${hint}`);
+        ? ' Uruchom npm run dev:vercel (vercel dev) zamiast samego gatsby develop — port 8000 nie ma API.'
+        : ' Sprawdź połączenie i logi Vercel.';
+    return new Error(`Brak połączenia z API (${path}).${hint}`);
   }
 
   return err instanceof Error ? err : new Error(msg || 'Błąd sieci');
 }
 
-async function callNetlifyFunction(path, payload, { signal } = {}) {
-  const url = `${getBaseUrl()}/.netlify/functions/${path}`;
+async function callApi(path, payload, { signal } = {}) {
+  const url = `${getBaseUrl()}/api/${path}`;
   const startedAt = Date.now();
   const safePayload = { ...payload };
   if (safePayload.apiKey) safePayload.apiKey = '[ukryte]';
@@ -64,7 +64,7 @@ async function callNetlifyFunction(path, payload, { signal } = {}) {
       signal,
     });
   } catch (err) {
-    const normalized = normalizeNetlifyFetchError(err, path);
+    const normalized = normalizeApiFetchError(err, path);
     logEvent({
       level: 'error',
       category: 'api',
@@ -136,7 +136,7 @@ export async function testSellasistConnection(config) {
     return getDemoConnectionResult();
   }
 
-  return callNetlifyFunction('sellasist-test', {
+  return callApi('sellasist-test', {
     account: buildConfig(config).account,
     apiKey: config.apiKey,
   });
@@ -150,7 +150,7 @@ export async function fetchSellasistOrders(config, params = {}, options = {}) {
     });
   }
 
-  return callNetlifyFunction(
+  return callApi(
     'sellasist-orders',
     {
       account: buildConfig(config).account,

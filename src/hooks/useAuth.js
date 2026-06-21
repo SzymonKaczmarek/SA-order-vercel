@@ -86,7 +86,7 @@ export function useAuthInternal() {
     setError('');
 
     try {
-      const res = await fetch(`${getBaseUrl()}/.netlify/functions/auth-login`, {
+      const res = await fetch(`${getBaseUrl()}/api/auth-login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: username.trim(), password }),

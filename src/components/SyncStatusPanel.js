@@ -131,7 +131,7 @@ export function SyncStatusPanel({ syncInfo }) {
         </SyncSection>
       )}
 
-      <SyncSection title="Baza danych (serwer Netlify)" accent="emerald">
+      <SyncSection title="Baza danych (serwer Neon)" accent="emerald">
         <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 min-w-0">
           <span className="text-xs text-slate-500 shrink-0">Status zapisu</span>
           <span
@@ -155,7 +155,7 @@ export function SyncStatusPanel({ syncInfo }) {
           </p>
         )}
         <p className="text-[10px] text-slate-400 leading-relaxed pt-0.5">
-          Trwałe dane w Netlify Database. Zapisz po imporcie („Zapisz na serwerze”) lub przez
+          Trwałe dane w Neon PostgreSQL. Zapisz po imporcie („Zapisz na serwerze”) lub przez
           „Zarządzaj zamówieniami”.
         </p>
       </SyncSection>

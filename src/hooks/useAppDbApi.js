@@ -13,7 +13,7 @@ async function callAppDb(action, payload = {}) {
   }
 
   try {
-    const res = await fetch(`${getBaseUrl()}/.netlify/functions/app-db`, {
+    const res = await fetch(`${getBaseUrl()}/api/app-db`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, ...payload }),
