@@ -76,6 +76,42 @@ export function writeSellasistConfig(accessAccountId, config) {
   writeConfigStore(store);
 }
 
+/** Scala lokalną konfigurację z wpisem z bazy — nie nadpisuje apiKey pustym remote. */
+export function mergeSellasistConfig(local, remote) {
+  const base = { ...DEFAULT_CONFIG, ...(local || {}) };
+  if (!remote || typeof remote !== 'object') {
+    return base;
+  }
+
+  const remoteAccount = String(remote.account || '').trim();
+  const localAccount = String(base.account || '').trim();
+  const remoteKey = String(remote.apiKey || '').trim();
+  const localKey = String(base.apiKey || '').trim();
+
+  return {
+    account: remoteAccount || localAccount,
+    apiKey: remoteKey || localKey,
+    useDemoData:
+      remote.useDemoData != null ? Boolean(remote.useDemoData) : Boolean(base.useDemoData),
+  };
+}
+
+export async function resolveSellasistConfigForAccount(accessAccountId) {
+  const local = readSellasistConfig(accessAccountId);
+  if (!accessAccountId) {
+    return local;
+  }
+
+  try {
+    const remote = await getSellasistConfigFromDb(accessAccountId);
+    const merged = mergeSellasistConfig(local, remote);
+    writeSellasistConfig(accessAccountId, merged);
+    return merged;
+  } catch (_e) {
+    return local;
+  }
+}
+
 export function isDemoMode(config) {
   return Boolean(config?.useDemoData);
 }
@@ -89,27 +125,40 @@ export function useSellasistConfig() {
   const { activeAccountId, ready: accountReady } = useAccessAccount();
   const [config, setConfigState] = useState(DEFAULT_CONFIG);
   const [loaded, setLoaded] = useState(false);
+  const [configSynced, setConfigSynced] = useState(false);
 
   useEffect(() => {
     if (!accountReady || !activeAccountId) {
       setLoaded(false);
+      setConfigSynced(false);
       return;
     }
 
     let mounted = true;
 
     const bootstrap = async () => {
+      setLoaded(false);
+      setConfigSynced(false);
+
       const localConfig = readSellasistConfig(activeAccountId);
-      setConfigState(localConfig);
-      setLoaded(true);
+      if (mounted) {
+        setConfigState(localConfig);
+      }
 
       try {
-        const remoteConfig = await getSellasistConfigFromDb(activeAccountId);
-        if (!mounted || !remoteConfig) return;
-        writeSellasistConfig(activeAccountId, remoteConfig);
-        setConfigState(readSellasistConfig(activeAccountId));
+        const merged = await resolveSellasistConfigForAccount(activeAccountId);
+        if (mounted) {
+          setConfigState(merged);
+        }
       } catch (_e) {
-        // fallback lokalny
+        if (mounted) {
+          setConfigState(localConfig);
+        }
+      }
+
+      if (mounted) {
+        setLoaded(true);
+        setConfigSynced(true);
       }
     };
 
@@ -153,10 +202,23 @@ export function useSellasistConfig() {
     [activeAccountId]
   );
 
+  const refreshConfigFromDb = useCallback(async () => {
+    if (!activeAccountId) {
+      return DEFAULT_CONFIG;
+    }
+
+    const merged = await resolveSellasistConfigForAccount(activeAccountId);
+    setConfigState(merged);
+    setConfigSynced(true);
+    return merged;
+  }, [activeAccountId]);
+
   return {
     config,
     loaded,
+    configSynced,
     setConfig,
+    refreshConfigFromDb,
     activeAccountId,
     isConfigured: isSellasistConfigured(config),
     isDemoMode: isDemoMode(config),

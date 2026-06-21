@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatFetchedAt } from '../data/ordersLocalDb';
+import { DEFAULT_ORDER_SORT, normalizeOrderSort } from '../utils/sortOrders';
 import {
   clearScope,
   deleteByKeys,
@@ -29,6 +30,7 @@ export function useOrdersLocalStore({
   isDemoMode,
   activeSource,
   filters,
+  orderSort,
   ordersPage,
   ordersPageSize,
 }) {
@@ -37,6 +39,7 @@ export function useOrdersLocalStore({
   const [localOrdersLoading, setLocalOrdersLoading] = useState(false);
   const [syncInfo, setSyncInfo] = useState(EMPTY_SYNC_INFO);
   const [localCacheHydrated, setLocalCacheHydrated] = useState(false);
+  const [initialListReady, setInitialListReady] = useState(false);
   const lastLoadedRef = useRef({ page: 0, size: 0, scope: null, filterKey: '' });
 
   const getScopeKey = useCallback(() => {
@@ -92,9 +95,16 @@ export function useOrdersLocalStore({
       setLocalOrdersLoading(true);
 
       try {
-        const pageData = await getFilteredPage(scopeKey, filters, offset, size);
+        const pageData = await getFilteredPage(
+          scopeKey,
+          filters,
+          offset,
+          size,
+          normalizeOrderSort(orderSort)
+        );
         setLocalOrders(pageData.orders);
         setLocalOrdersTotal(pageData.total);
+        setInitialListReady(true);
         return pageData.total;
       } catch (_err) {
         setLocalOrders([]);
@@ -103,7 +113,7 @@ export function useOrdersLocalStore({
         setLocalOrdersLoading(false);
       }
     },
-    [activeAccountId, filters, getScopeKey]
+    [activeAccountId, filters, getScopeKey, orderSort]
   );
 
   const hydrateLocalStore = useCallback(async () => {
@@ -197,6 +207,7 @@ export function useOrdersLocalStore({
 
   const resetLocalHydration = useCallback(() => {
     setLocalCacheHydrated(false);
+    setInitialListReady(false);
     setLocalOrders([]);
     setLocalOrdersTotal(0);
     setSyncInfo(EMPTY_SYNC_INFO);
@@ -214,12 +225,14 @@ export function useOrdersLocalStore({
     }
 
     const filterKey = JSON.stringify(filters);
+    const sortKey = JSON.stringify(normalizeOrderSort(orderSort));
     const last = lastLoadedRef.current;
     if (
       last.page === ordersPage &&
       last.size === ordersPageSize &&
       last.scope === scopeKey &&
-      last.filterKey === filterKey
+      last.filterKey === filterKey &&
+      last.sortKey === sortKey
     ) {
       return;
     }
@@ -229,6 +242,7 @@ export function useOrdersLocalStore({
       size: ordersPageSize,
       scope: scopeKey,
       filterKey,
+      sortKey,
     };
     loadLocalOrdersPage(ordersPage, ordersPageSize, scopeKey);
   }, [
@@ -237,6 +251,7 @@ export function useOrdersLocalStore({
     getScopeKey,
     loadLocalOrdersPage,
     localCacheHydrated,
+    orderSort,
     ordersPage,
     ordersPageSize,
   ]);
@@ -247,6 +262,7 @@ export function useOrdersLocalStore({
     localOrdersLoading,
     syncInfo,
     localCacheHydrated,
+    initialListReady,
     hydrateLocalStore,
     refreshLocalMeta,
     loadLocalOrdersPage,

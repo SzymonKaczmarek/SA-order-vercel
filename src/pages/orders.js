@@ -22,7 +22,7 @@ import {
   formatFetchedAt,
 } from '../data/ordersLocalDb';
 import { getAccessAccountDisplayName } from '../data/accessAccounts';
-import { fetchSellasistOrders } from '../hooks/useSellasistApi';
+import { fetchSellasistOrders, testSellasistConnection } from '../hooks/useSellasistApi';
 import {
   appendOrdersToServerDb,
   clearOrdersFromServerDb,
@@ -34,8 +34,19 @@ import {
   setOrdersToServerDb,
 } from '../hooks/useAppDbApi';
 import { useOrdersLocalStore } from '../hooks/useOrdersLocalStore';
-import { useSellasistConfig } from '../hooks/useSellasistConfig';
+import {
+  isDemoMode as isSellasistDemoMode,
+  isSellasistConfigured,
+  resolveSellasistConfigForAccount,
+  useSellasistConfig,
+} from '../hooks/useSellasistConfig';
 import { downloadAllOrders } from '../utils/bulkOrderDownload';
+import {
+  clearBulkImportResume,
+  readBulkImportResume,
+  writeBulkImportResume,
+} from '../utils/bulkImportResume';
+import { DEFAULT_ORDER_SORT, normalizeOrderSort } from '../utils/sortOrders';
 import { downloadOrdersCsv, getOrdersExportFilename } from '../utils/exportOrdersCsv';
 import { logEvent } from '../utils/eventLog';
 import {
@@ -92,6 +103,7 @@ function OrdersView() {
   const [apiMeta, setApiMeta] = useState(null);
   const [error, setError] = useState('');
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [orderSort, setOrderSort] = useState(DEFAULT_ORDER_SORT);
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkModal, setBulkModal] = useState({
     open: false,
@@ -113,9 +125,13 @@ function OrdersView() {
   const [serverDbHintReady, setServerDbHintReady] = useState(false);
 
   const abortRef = useRef(null);
+  const bulkAbortModeRef = useRef(null);
+  const bulkSessionRef = useRef(null);
+  const bulkProgressRef = useRef(INITIAL_PROGRESS);
+  const [bulkResumeVersion, setBulkResumeVersion] = useState(0);
   const resolvedServerScopeKeyRef = useRef(null);
   const serverKnownTotalRef = useRef(0);
-  const lastLoadedServerPageRef = useRef({ page: 0, size: 0, scope: null });
+  const lastLoadedServerPageRef = useRef({ page: 0, size: 0, scope: null, sortKey: '' });
   const serverLoadAcceptedRef = useRef(false);
   const serverLoadPhaseRef = useRef(null);
   const previousActiveAccountIdRef = useRef(null);
@@ -131,6 +147,7 @@ function OrdersView() {
     isDemoMode,
     activeSource,
     filters,
+    orderSort,
     ordersPage,
     ordersPageSize,
   });
@@ -141,6 +158,7 @@ function OrdersView() {
     localOrdersLoading,
     syncInfo,
     localCacheHydrated,
+    initialListReady,
     hydrateLocalStore,
     loadLocalOrdersPage,
     appendLocalBatch,
@@ -157,9 +175,15 @@ function OrdersView() {
   const pageInitStep = useMemo(() => {
     if (!localCacheHydrated) return 'local';
     if (!serverDbHintReady) return 'server';
-    if (activeSource === 'local' && localOrdersLoading) return 'list';
+    if (activeSource === 'local' && localOrdersLoading && !initialListReady) return 'list';
     return null;
-  }, [activeSource, localCacheHydrated, localOrdersLoading, serverDbHintReady]);
+  }, [
+    activeSource,
+    initialListReady,
+    localCacheHydrated,
+    localOrdersLoading,
+    serverDbHintReady,
+  ]);
 
   const showPageInitOverlay = Boolean(
     isConfigured &&
@@ -256,7 +280,11 @@ function OrdersView() {
       }
 
       try {
-        const entry = await getOrdersFromServerDb(scopeKey, { offset, limit: size });
+        const entry = await getOrdersFromServerDb(scopeKey, {
+          offset,
+          limit: size,
+          sort: normalizeOrderSort(orderSort),
+        });
         const pageOrders = Array.isArray(entry?.orders) ? entry.orders : [];
         const total = Number(entry?.total) || pageOrders.length;
         const totalPages = Math.max(1, Math.ceil(total / size) || 1);
@@ -316,7 +344,12 @@ function OrdersView() {
         setServerOrdersLoading(false);
       }
     },
-    [activeAccountId]
+    [activeAccountId, orderSort]
+  );
+
+  const orderSortKey = useMemo(
+    () => JSON.stringify(normalizeOrderSort(orderSort)),
+    [orderSort]
   );
 
   const applyResolvedServerMeta = useCallback((resolved) => {
@@ -462,6 +495,7 @@ function OrdersView() {
         last.page === 1 &&
         last.size === ordersPageSize &&
         last.scope === scopeKey &&
+        last.sortKey === orderSortKey &&
         serverOrders.length > 0
       ) {
         return true;
@@ -472,16 +506,25 @@ function OrdersView() {
         page: 0,
         size: ordersPageSize,
         scope: scopeKey,
+        sortKey: orderSortKey,
       };
       await loadServerOrdersPage(1, ordersPageSize, scopeKey, { preserveOverlay });
       lastLoadedServerPageRef.current = {
         page: 1,
         size: ordersPageSize,
         scope: scopeKey,
+        sortKey: orderSortKey,
       };
       return true;
     },
-    [loadServerOrdersPage, ordersPageSize, probeServerOrders, serverOrders.length, serverOrdersTotal]
+    [
+      loadServerOrdersPage,
+      orderSortKey,
+      ordersPageSize,
+      probeServerOrders,
+      serverOrders.length,
+      serverOrdersTotal,
+    ]
   );
 
   const handleSourceChange = useCallback(
@@ -521,7 +564,7 @@ function OrdersView() {
       serverLoadAcceptedRef.current = false;
       resolvedServerScopeKeyRef.current = null;
       serverKnownTotalRef.current = 0;
-      lastLoadedServerPageRef.current = { page: 0, size: 0, scope: null };
+      lastLoadedServerPageRef.current = { page: 0, size: 0, scope: null, sortKey: '' };
       setServerLoadPhase(null);
       setServerOrdersTotal(0);
       setServerOrders([]);
@@ -532,6 +575,7 @@ function OrdersView() {
       resetLocalHydration();
       setSelectedIds([]);
       setFilters(EMPTY_FILTERS);
+      setOrderSort(DEFAULT_ORDER_SORT);
       setError('');
       setOrdersPage(1);
     }
@@ -573,7 +617,12 @@ function OrdersView() {
     }
 
     const last = lastLoadedServerPageRef.current;
-    if (last.page === ordersPage && last.size === ordersPageSize && last.scope === scopeKey) {
+    if (
+      last.page === ordersPage &&
+      last.size === ordersPageSize &&
+      last.scope === scopeKey &&
+      last.sortKey === orderSortKey
+    ) {
       return;
     }
 
@@ -581,9 +630,10 @@ function OrdersView() {
       page: ordersPage,
       size: ordersPageSize,
       scope: scopeKey,
+      sortKey: orderSortKey,
     };
     loadServerOrdersPage(ordersPage, ordersPageSize, scopeKey);
-  }, [activeSource, loadServerOrdersPage, ordersPage, ordersPageSize]);
+  }, [activeSource, loadServerOrdersPage, orderSortKey, ordersPage, ordersPageSize]);
 
   const resolveServerScopeKey = useCallback(async () => {
     if (resolvedServerScopeKeyRef.current) {
@@ -733,12 +783,14 @@ function OrdersView() {
       page: 0,
       size: ordersPageSize,
       scope: serverScopeKey,
+      sortKey: orderSortKey,
     };
     await loadServerOrdersPage(1, ordersPageSize, serverScopeKey);
     lastLoadedServerPageRef.current = {
       page: 1,
       size: ordersPageSize,
       scope: serverScopeKey,
+      sortKey: orderSortKey,
     };
     setActiveSource('server');
     await refreshServerDbHint();
@@ -749,6 +801,7 @@ function OrdersView() {
     getServerScopeKey,
     iterateLocalBatches,
     loadServerOrdersPage,
+    orderSortKey,
     ordersPageSize,
     probeServerOrders,
     refreshServerDbHint,
@@ -926,6 +979,18 @@ function OrdersView() {
     selectedIds,
   ]);
 
+  const bumpBulkResume = useCallback(() => {
+    setBulkResumeVersion((value) => value + 1);
+  }, []);
+
+  const bulkResumeInfo = useMemo(() => {
+    if (!activeAccountId) return null;
+    const saved = readBulkImportResume(activeAccountId);
+    if (!saved) return null;
+    if (saved.configHint !== getConfigHint(config)) return null;
+    return saved;
+  }, [activeAccountId, config, bulkResumeVersion]);
+
   const openBulkDownload = useCallback(() => {
     if (!isConfigured) return;
 
@@ -942,46 +1007,155 @@ function OrdersView() {
   }, [isConfigured]);
 
   const runBulkDownload = useCallback(
-    async ({ downloadScope, destination = 'local' }) => {
-      if (!isConfigured) return;
+    async ({ downloadScope, destination = 'local', resume = false } = {}) => {
+      if (!activeAccountId) return;
 
-      const savesLocal = destination === 'local' || destination === 'both';
-      const savesServer = destination === 'server' || destination === 'both';
+      let importConfig = config;
+      try {
+        importConfig = await resolveSellasistConfigForAccount(activeAccountId);
+      } catch (_e) {
+        // zostaje bieżąca konfiguracja z hooka
+      }
+
+      let savedResume = null;
+      if (resume) {
+        savedResume = readBulkImportResume(activeAccountId);
+        if (!savedResume || savedResume.configHint !== getConfigHint(importConfig)) {
+          setBulkModal({
+            open: true,
+            phase: 'error',
+            progress: INITIAL_PROGRESS,
+            error: 'Brak zapisanego wznowienia lub konfiguracja Sellasist się zmieniła.',
+            result: null,
+            downloadScope: null,
+            importDestination: 'local',
+          });
+          return;
+        }
+      }
+
+      const effectiveScope = savedResume?.downloadScope || downloadScope;
+      const effectiveDestination = savedResume?.destination || destination;
+
+      if (!effectiveScope) return;
+
+      if (!isSellasistConfigured(importConfig)) {
+        setBulkModal({
+          open: true,
+          phase: 'error',
+          progress: INITIAL_PROGRESS,
+          error:
+            'Brak konfiguracji Sellasist dla aktywnego konta. Wejdź w Konfiguracja API, podaj subdomenę sklepu (.sellasist.pl) i klucz API, zapisz i użyj „Testuj połączenie”.',
+          result: null,
+          downloadScope: effectiveScope,
+          importDestination: effectiveDestination,
+        });
+        return;
+      }
+
+      if (!isSellasistDemoMode(importConfig)) {
+        try {
+          await testSellasistConnection(importConfig);
+        } catch (err) {
+          setBulkModal({
+            open: true,
+            phase: 'error',
+            progress: INITIAL_PROGRESS,
+            error:
+              err?.message ||
+              'Sellasist odrzucił połączenie. Sprawdź subdomenę sklepu i klucz API w Konfiguracji.',
+            result: null,
+            downloadScope: effectiveScope,
+            importDestination: effectiveDestination,
+          });
+          return;
+        }
+      }
+
+      const savesLocal = effectiveDestination === 'local' || effectiveDestination === 'both';
+      const savesServer = effectiveDestination === 'server' || effectiveDestination === 'both';
 
       abortRef.current = new AbortController();
-      const importStartedAt = new Date().toISOString();
+      bulkAbortModeRef.current = null;
+      const importStartedAt = savedResume?.importStartedAt || new Date().toISOString();
+      let fetchedAny = Boolean(savedResume?.fetchedTotal);
 
-      if (savesLocal) {
-        await clearLocal();
-      }
-      if (savesServer && activeAccountId) {
-        await persistServerOrders([]);
-        serverLoadAcceptedRef.current = true;
+      if (!savedResume) {
+        clearBulkImportResume(activeAccountId);
+        if (savesLocal) {
+          await clearLocal();
+        }
+        if (savesServer && activeAccountId) {
+          await persistServerOrders([]);
+          serverLoadAcceptedRef.current = true;
+        }
       }
 
-      setActiveSource(destination === 'server' ? 'server' : 'local');
+      bulkSessionRef.current = {
+        savesLocal,
+        savesServer,
+        destination: effectiveDestination,
+        downloadScope: effectiveScope,
+        importStartedAt,
+        importConfig,
+      };
+
+      const resumeProgress = savedResume
+        ? {
+            packageNum: savedResume.packageNum || 0,
+            fetchedTotal: savedResume.fetchedTotal || 0,
+            lastBatchSize: 0,
+            remainingPackages: '—',
+            remainingOrders: '—',
+            etaLabel: '—',
+            progressPercent: savedResume.totalKnown
+              ? Math.min(
+                  99,
+                  Math.round(
+                    ((savedResume.fetchedTotal || 0) / Math.max(savedResume.totalKnown, 1)) * 100
+                  )
+                )
+              : 0,
+            requestsThisMinute: 0,
+            offset: savedResume.offset || 0,
+            totalKnown: savedResume.totalKnown ?? null,
+          }
+        : INITIAL_PROGRESS;
+
+      bulkProgressRef.current = resumeProgress;
+
+      setActiveSource(effectiveDestination === 'server' ? 'server' : 'local');
       setOrdersPage(1);
 
       setBulkModal({
         open: true,
         phase: 'downloading',
-        progress: INITIAL_PROGRESS,
+        progress: resumeProgress,
         error: '',
         result: null,
-        downloadScope,
-        importDestination: destination,
+        downloadScope: effectiveScope,
+        importDestination: effectiveDestination,
       });
       setError('');
 
       logEvent({
         level: 'info',
         category: 'orders',
-        action: 'orders.import.start',
-        message: 'Rozpoczęto import zamówień z Sellasist',
-        details: { downloadScope, destination },
+        action: savedResume ? 'orders.import.resume' : 'orders.import.start',
+        message: savedResume
+          ? 'Wznowiono import zamówień z Sellasist'
+          : 'Rozpoczęto import zamówień z Sellasist',
+        details: {
+          downloadScope: effectiveScope,
+          destination: effectiveDestination,
+          account: importConfig.account || '',
+          useDemoData: Boolean(importConfig.useDemoData),
+          fetchedTotal: savedResume?.fetchedTotal || 0,
+        },
       });
 
       const appendBatchToStore = async ({ batch, meta, apiRaw: batchApiRaw }) => {
+        fetchedAny = true;
         if (savesLocal) {
           await appendLocalBatch(batch, {
             fetchedAt: importStartedAt,
@@ -1007,16 +1181,27 @@ function OrdersView() {
         }
       };
 
+      const resumeFrom = savedResume
+        ? {
+            offset: savedResume.offset || 0,
+            packageNum: savedResume.packageNum || 0,
+            fetchedTotal: savedResume.fetchedTotal || 0,
+            totalKnown: savedResume.totalKnown ?? null,
+          }
+        : null;
+
       try {
         const result = await downloadAllOrders(
-          config,
+          importConfig,
           (params) =>
-            fetchSellasistOrders(config, params, { signal: abortRef.current.signal }),
+            fetchSellasistOrders(importConfig, params, { signal: abortRef.current.signal }),
           {
             signal: abortRef.current.signal,
-            downloadScope,
+            downloadScope: effectiveScope,
+            resumeFrom,
             onBatch: appendBatchToStore,
             onProgress: (progress) => {
+              bulkProgressRef.current = progress;
               setBulkModal((current) => ({
                 ...current,
                 progress,
@@ -1025,6 +1210,10 @@ function OrdersView() {
           }
         );
 
+        clearBulkImportResume(activeAccountId);
+        bumpBulkResume();
+        bulkSessionRef.current = null;
+
         if (savesServer && activeAccountId) {
           const serverScopeKey = getServerScopeKey();
           await probeServerOrders();
@@ -1032,16 +1221,18 @@ function OrdersView() {
             page: 0,
             size: ordersPageSize,
             scope: serverScopeKey,
+            sortKey: orderSortKey,
           };
           await loadServerOrdersPage(1, ordersPageSize, serverScopeKey);
           lastLoadedServerPageRef.current = {
             page: 1,
             size: ordersPageSize,
             scope: serverScopeKey,
+            sortKey: orderSortKey,
           };
         }
 
-        if (destination === 'server') {
+        if (effectiveDestination === 'server') {
           setActiveSource('server');
         } else {
           setActiveSource('local');
@@ -1054,8 +1245,8 @@ function OrdersView() {
           ...current,
           phase: 'done',
           result,
-          downloadScope,
-          importDestination: destination,
+          downloadScope: effectiveScope,
+          importDestination: effectiveDestination,
           progress: {
             ...current.progress,
             packageNum: result.packages,
@@ -1072,20 +1263,116 @@ function OrdersView() {
           action: 'orders.import.success',
           message: `Import zakończony: ${result.count || 0} zamówień`,
           details: {
-            downloadScope,
-            destination,
+            downloadScope: effectiveScope,
+            destination: effectiveDestination,
             count: result.count || 0,
             packages: result.packages,
+            resumed: Boolean(savedResume),
           },
         });
       } catch (err) {
         if (abortRef.current?.signal.aborted) {
-          logEvent({
-            level: 'warn',
-            category: 'orders',
-            action: 'orders.import.cancelled',
-            message: 'Import zamówień anulowany',
-            details: { downloadScope, destination },
+          const mode = bulkAbortModeRef.current;
+          bulkAbortModeRef.current = null;
+          const session = bulkSessionRef.current;
+          bulkSessionRef.current = null;
+          const progress = bulkProgressRef.current || INITIAL_PROGRESS;
+
+          if (mode === 'pause' && session) {
+            writeBulkImportResume(activeAccountId, {
+              configHint: getConfigHint(session.importConfig),
+              downloadScope: session.downloadScope,
+              destination: session.destination,
+              offset: progress.offset ?? 0,
+              packageNum: progress.packageNum ?? 0,
+              fetchedTotal: progress.fetchedTotal ?? 0,
+              totalKnown: progress.totalKnown ?? null,
+              importStartedAt: session.importStartedAt,
+            });
+            bumpBulkResume();
+
+            if (session.destination === 'server') {
+              setActiveSource('server');
+            } else {
+              setActiveSource('local');
+            }
+
+            if (session.savesLocal) {
+              await loadLocalOrdersPage(1, ordersPageSize);
+            }
+            if (session.savesServer && activeAccountId) {
+              const serverScopeKey = getServerScopeKey();
+              await probeServerOrders();
+              await loadServerOrdersPage(1, ordersPageSize, serverScopeKey);
+            }
+            await refreshServerDbHint();
+
+            setBulkModal({
+              open: false,
+              phase: 'idle',
+              progress: INITIAL_PROGRESS,
+              error: '',
+              result: null,
+              downloadScope: null,
+              importDestination: 'local',
+            });
+
+            logEvent({
+              level: 'info',
+              category: 'orders',
+              action: 'orders.import.paused',
+              message: `Import wstrzymany: ${progress.fetchedTotal || 0} zamówień`,
+              details: {
+                downloadScope: session.downloadScope,
+                destination: session.destination,
+                fetchedTotal: progress.fetchedTotal || 0,
+              },
+            });
+            return;
+          }
+
+          if (mode === 'cancel' && session) {
+            clearBulkImportResume(activeAccountId);
+            bumpBulkResume();
+
+            if (session.savesLocal) {
+              await clearLocal();
+            }
+            if (session.savesServer && activeAccountId) {
+              await persistServerOrders([]);
+            }
+
+            setBulkModal({
+              open: false,
+              phase: 'idle',
+              progress: INITIAL_PROGRESS,
+              error: '',
+              result: null,
+              downloadScope: null,
+              importDestination: 'local',
+            });
+
+            logEvent({
+              level: 'warn',
+              category: 'orders',
+              action: 'orders.import.cancelled',
+              message: 'Import zamówień anulowany — dane importu usunięte',
+              details: {
+                downloadScope: session.downloadScope,
+                destination: session.destination,
+              },
+            });
+            return;
+          }
+
+          setBulkModal({
+            open: false,
+            phase: 'idle',
+            progress: INITIAL_PROGRESS,
+            error: '',
+            result: null,
+            downloadScope: null,
+            importDestination: 'local',
           });
           return;
         }
@@ -1102,13 +1389,20 @@ function OrdersView() {
           category: 'orders',
           action: 'orders.import.error',
           message: 'Błąd importu zamówień',
-          details: { downloadScope, destination, error: err.message },
+          details: { downloadScope: effectiveScope, destination: effectiveDestination, error: err.message },
         });
+
+        const baseMessage = err.message || 'Nie udało się pobrać zamówień.';
+        const suffix = fetchedAny
+          ? ` Pobrane do tej pory zamówienia są w ${savedWhere}.`
+          : '';
+
+        bulkSessionRef.current = null;
 
         setBulkModal((current) => ({
           ...current,
           phase: 'error',
-          error: `${err.message || 'Nie udało się pobrać zamówień.'} Pobrane do tej pory zamówienia są w ${savedWhere}.`,
+          error: `${baseMessage}${suffix}`,
         }));
       }
     },
@@ -1117,10 +1411,10 @@ function OrdersView() {
       appendLocalBatch,
       appendOrdersToServerDb,
       buildServerPayload,
+      bumpBulkResume,
       clearLocal,
       config,
       getServerScopeKey,
-      isConfigured,
       loadLocalOrdersPage,
       loadServerOrdersPage,
       ordersPageSize,
@@ -1130,18 +1424,26 @@ function OrdersView() {
     ]
   );
 
-  const cancelBulkDownload = useCallback(() => {
+  const pauseBulkDownload = useCallback(() => {
+    bulkAbortModeRef.current = 'pause';
     abortRef.current?.abort();
-    setBulkModal({
-      open: false,
-      phase: 'idle',
-      progress: INITIAL_PROGRESS,
-      error: '',
-      result: null,
-      downloadScope: null,
-      importDestination: 'local',
-    });
   }, []);
+
+  const cancelBulkDownload = useCallback(() => {
+    bulkAbortModeRef.current = 'cancel';
+    abortRef.current?.abort();
+  }, []);
+
+  const resumeBulkDownload = useCallback(() => {
+    runBulkDownload({ resume: true });
+  }, [runBulkDownload]);
+
+  const discardBulkResume = useCallback(() => {
+    if (activeAccountId) {
+      clearBulkImportResume(activeAccountId);
+    }
+    bumpBulkResume();
+  }, [activeAccountId, bumpBulkResume]);
 
   const closeBulkModal = useCallback(() => {
     setBulkModal({
@@ -1185,7 +1487,7 @@ function OrdersView() {
 
   useEffect(() => {
     setOrdersPage(1);
-  }, [filters, activeSource, ordersPageSize]);
+  }, [filters, activeSource, ordersPageSize, orderSortKey]);
 
   useEffect(() => {
     if (ordersPage !== safeOrdersPage) {
@@ -1258,6 +1560,19 @@ function OrdersView() {
 
   const exportSourceLabel =
     activeSource === 'local' ? 'Bufor lokalny' : 'Baza danych';
+
+  const sellasistSummary = useMemo(() => {
+    if (isDemoMode) {
+      return 'tryb demo (bez wywołań API)';
+    }
+    if (config.account && config.apiKey) {
+      return `${config.account}.sellasist.pl · klucz API zapisany`;
+    }
+    if (config.account) {
+      return `${config.account}.sellasist.pl · brak klucza API`;
+    }
+    return 'brak konfiguracji — uzupełnij w Konfiguracja API';
+  }, [config.account, config.apiKey, isDemoMode]);
 
   const visibleOrderKeys = useMemo(
     () => paginatedOrders.map(getOrderKey).filter(Boolean),
@@ -1425,7 +1740,10 @@ function OrdersView() {
                 )}
 
                 {((activeSource === 'server' && serverOrdersLoading && serverLoadPhase === 'loading') ||
-                  (activeSource === 'local' && localOrdersLoading && !showPageInitOverlay) ||
+                  (activeSource === 'local' &&
+                    localOrdersLoading &&
+                    !showPageInitOverlay &&
+                    localOrders.length === 0) ||
                   (bulkDownloading && localOrdersTotal === 0)) && (
                   <p className="text-sm text-slate-500 text-center py-12">
                     {activeSource === 'server'
@@ -1508,6 +1826,8 @@ function OrdersView() {
                 <OrdersFilters
                   filters={filters}
                   onChange={setFilters}
+                  orderSort={orderSort}
+                  onSortChange={setOrderSort}
                   statuses={statuses}
                   onResetFilters={() => setFilters(EMPTY_FILTERS)}
                   filteredCount={
@@ -1546,7 +1866,12 @@ function OrdersView() {
         resultCount={bulkModal.result?.count || 0}
         downloadScope={bulkModal.downloadScope}
         importDestination={bulkModal.importDestination}
+        sellasistSummary={sellasistSummary}
+        resumeInfo={bulkResumeInfo}
         onStartDownload={runBulkDownload}
+        onResumeDownload={resumeBulkDownload}
+        onDiscardResume={discardBulkResume}
+        onPause={pauseBulkDownload}
         onCancel={cancelBulkDownload}
         onClose={closeBulkModal}
       />

@@ -188,29 +188,30 @@ function shouldStopAfterBatch(rawBatch, idRange) {
 export async function downloadAllOrders(
   config,
   fetchPage,
-  { onProgress, onBatch, signal, downloadScope }
+  { onProgress, onBatch, signal, downloadScope, resumeFrom = null }
 ) {
   const idRange = downloadScope?.type === 'idRange' ? downloadScope.idRange : null;
   const latestCount = downloadScope?.type === 'latest' ? downloadScope.latestCount : null;
 
   const limiter = new RequestRateLimiter(MAX_REQUESTS_PER_MINUTE);
-  let offset = 0;
-  let packageNum = 0;
-  let fetchedTotal = 0;
+  let offset = resumeFrom?.offset ?? 0;
+  let packageNum = resumeFrom?.packageNum ?? 0;
+  let fetchedTotal = resumeFrom?.fetchedTotal ?? 0;
   const startTime = Date.now();
   let hasMore = true;
   let totalKnown =
-    latestCount != null
+    resumeFrom?.totalKnown ??
+    (latestCount != null
       ? latestCount
       : idRange
         ? idRange.to - idRange.from + 1
-        : null;
+        : null);
   let lastMeta = null;
   let lastRaw = null;
 
   while (hasMore) {
     if (signal?.aborted) {
-      throw new Error('Pobieranie anulowane.');
+      throw new Error('Pobieranie przerwane.');
     }
 
     if (latestCount != null && fetchedTotal >= latestCount) {
@@ -287,6 +288,8 @@ export async function downloadAllOrders(
       fetchedTotal,
       lastBatchSize: batch.length,
       hasMore,
+      offset,
+      totalKnown,
       remainingPackages:
         remainingPackagesCount != null
           ? String(remainingPackagesCount)
@@ -326,5 +329,6 @@ export async function downloadAllOrders(
     downloadScope: downloadScope || { type: 'all' },
     idRange: idRange || null,
     latestCount: latestCount ?? null,
+    resumed: Boolean(resumeFrom),
   };
 }

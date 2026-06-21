@@ -90,6 +90,12 @@ module.exports = async function handler(req, res) {
       if (body.limit !== undefined) {
         options.limit = body.limit;
       }
+      if (body.sortBy) {
+        options.sortBy = String(body.sortBy).trim();
+      }
+      if (body.sortDir) {
+        options.sortDir = String(body.sortDir).trim();
+      }
 
       const data = await getOrders(scopeKey, options);
       return jsonResponse(res, 200, { ok: true, data });

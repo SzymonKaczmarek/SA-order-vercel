@@ -47,39 +47,95 @@ export function getOrderCarts(order) {
   return [];
 }
 
-export function getOrderStatusLabel(order) {
-  if (order?.status && typeof order.status === 'object') {
-    return order.status.name || order.status.id || '—';
+const STATUS_ID_FALLBACKS = {
+  1: 'Nowe',
+  2: 'W realizacji',
+  3: 'Wysłane',
+  4: 'Zrealizowane',
+  5: 'Anulowane',
+};
+
+function pickStatusName(value) {
+  if (value == null || value === '') return '';
+  if (typeof value === 'object') {
+    return String(value.name || value.label || value.title || '').trim();
   }
-  return order?.status_name || order?.status_id || order?.status || '—';
+  return String(value).trim();
+}
+
+function isNumericStatus(value) {
+  const text = String(value ?? '').trim();
+  return text !== '' && /^\d+$/.test(text);
+}
+
+export function getOrderStatusLabel(order) {
+  if (!order || typeof order !== 'object') return '—';
+
+  const fromObject = pickStatusName(order.status);
+  if (fromObject && !isNumericStatus(fromObject)) {
+    return fromObject;
+  }
+
+  const candidates = [
+    order.status_name,
+    order.order_status_name,
+    order.status_label,
+    pickStatusName(order.order_status),
+    order.status_text,
+  ];
+
+  for (const candidate of candidates) {
+    const label = pickStatusName(candidate) || String(candidate || '').trim();
+    if (label && !isNumericStatus(label)) {
+      return label;
+    }
+  }
+
+  const statusId = order.status_id ?? (typeof order.status === 'object' ? order.status.id : order.status);
+  if (statusId != null && statusId !== '') {
+    const mapped = STATUS_ID_FALLBACKS[Number(statusId)];
+    if (mapped) return mapped;
+    if (fromObject) return fromObject;
+    return `Status #${statusId}`;
+  }
+
+  if (fromObject) return fromObject;
+
+  return '—';
 }
 
 export function getOrderStatusStyles(order) {
   const label = String(getOrderStatusLabel(order)).toLowerCase();
 
-  if (label.includes('nowe') || label === 'new') {
-    return 'bg-sky-50 text-sky-700 border-sky-200 ring-sky-100';
+  if (label.includes('nowe') || label === 'new' || label.includes('oczek')) {
+    return 'bg-sky-50 text-sky-800 border-sky-200 ring-sky-100';
   }
-  if (label.includes('realiz') || label.includes('trakcie') || label.includes('process')) {
-    return 'bg-amber-50 text-amber-800 border-amber-200 ring-amber-100';
+  if (
+    label.includes('realiz') ||
+    label.includes('trakcie') ||
+    label.includes('process') ||
+    label.includes('przygot')
+  ) {
+    return 'bg-amber-50 text-amber-900 border-amber-200 ring-amber-100';
   }
-  if (label.includes('wysł') || label.includes('wysl') || label.includes('ship')) {
-    return 'bg-violet-50 text-violet-700 border-violet-200 ring-violet-100';
+  if (label.includes('wysł') || label.includes('wysl') || label.includes('ship') || label.includes('nadano')) {
+    return 'bg-violet-50 text-violet-800 border-violet-200 ring-violet-100';
   }
   if (
     label.includes('zrealiz') ||
     label.includes('dostarc') ||
     label.includes('zakoń') ||
     label.includes('zakon') ||
-    label.includes('complete')
+    label.includes('complete') ||
+    label.includes('odebrane')
   ) {
-    return 'bg-emerald-50 text-emerald-700 border-emerald-200 ring-emerald-100';
+    return 'bg-emerald-50 text-emerald-800 border-emerald-200 ring-emerald-100';
   }
   if (label.includes('anul') || label.includes('cancel') || label.includes('odrzu')) {
-    return 'bg-rose-50 text-rose-700 border-rose-200 ring-rose-100';
+    return 'bg-rose-50 text-rose-800 border-rose-200 ring-rose-100';
   }
 
-  return 'bg-slate-100 text-slate-600 border-slate-200 ring-slate-100';
+  return 'bg-slate-100 text-slate-700 border-slate-200 ring-slate-100';
 }
 
 export function formatDate(value) {

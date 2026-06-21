@@ -1,6 +1,7 @@
 import { buildOrdersScopeKey, clearOrdersCache, readOrdersCache } from './ordersLocalDb';
 import { getOrderKey } from '../utils/orderSelection';
 import { filterOrders, hasActiveFilters } from '../utils/filterOrders';
+import { DEFAULT_ORDER_SORT, normalizeOrderSort, sortOrdersList } from '../utils/sortOrders';
 
 const DB_NAME = 'saor_orders_store';
 const DB_VERSION = 1;
@@ -278,21 +279,38 @@ async function collectFiltered(scopeKey, filters) {
   return matched;
 }
 
-export async function getFilteredPage(scopeKey, filters, offset = 0, limit = 25) {
-  if (!hasActiveFilters(filters)) {
-    return getPage(scopeKey, offset, limit);
-  }
+async function collectAll(scopeKey) {
+  const db = await openDb();
+  const tx = db.transaction('orders', 'readonly');
+  const index = tx.objectStore('orders').index('by_scope');
+  const all = [];
 
-  const matched = await collectFiltered(scopeKey, filters);
+  await walkCursor(index, IDBKeyRange.only(scopeKey), (cursor) => {
+    if (cursor.value?.payload) {
+      all.push(cursor.value.payload);
+    }
+  });
+
+  await waitTx(tx);
+  return all;
+}
+
+export async function getFilteredPage(scopeKey, filters, offset = 0, limit = 25, sort = DEFAULT_ORDER_SORT) {
+  const normalizedSort = normalizeOrderSort(sort);
+  const matched = hasActiveFilters(filters)
+    ? await collectFiltered(scopeKey, filters)
+    : await collectAll(scopeKey);
+  const sorted = sortOrdersList(matched, normalizedSort);
   const safeOffset = Math.max(0, Number(offset) || 0);
   const safeLimit = Math.max(1, Number(limit) || 25);
 
   return {
-    orders: matched.slice(safeOffset, safeOffset + safeLimit),
-    total: matched.length,
+    orders: sorted.slice(safeOffset, safeOffset + safeLimit),
+    total: sorted.length,
     offset: safeOffset,
     limit: safeLimit,
-    filtered: true,
+    filtered: hasActiveFilters(filters),
+    sort: normalizedSort,
   };
 }
 

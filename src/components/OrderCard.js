@@ -6,12 +6,11 @@ import {
   getCustomerFullName,
   getOrderCarts,
   getOrderPhone,
-  getOrderStatusLabel,
-  getOrderStatusStyles,
 } from '../utils/orderFormat';
 import { downloadOrdersCsv, getOrderExportFilename } from '../utils/exportOrdersCsv';
 import { ButtonLabel } from './ButtonLabel';
 import { IconCode, IconFileExport, IconTrash } from './Icons';
+import { OrderStatusPill } from './OrderStatusPill';
 import { getOrderKey } from '../utils/orderSelection';
 import { JsonOverlay } from './JsonOverlay';
 
@@ -131,20 +130,6 @@ function EmailLink({ email, onClickLink }) {
   );
 }
 
-function OrderStatusPill({ order }) {
-  const label = getOrderStatusLabel(order);
-  const styles = getOrderStatusStyles(order);
-
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] ring-1 ring-inset shrink-0 ${styles}`}
-    >
-      <span className="h-1.5 w-1.5 rounded-full bg-current opacity-75" aria-hidden />
-      {label}
-    </span>
-  );
-}
-
 function OrderMetaPill({ children, className = '' }) {
   return (
     <span
@@ -229,12 +214,12 @@ export function OrderCard({ order, selected, onSelectedChange, onDelete }) {
               <p className="text-[10px] uppercase tracking-[0.2em] text-slate-400 font-semibold">
                 Zamówienie #{orderId}
               </p>
-              <OrderStatusPill order={order} />
             </div>
             <h3 className="text-lg font-semibold text-slate-900 mt-1 truncate leading-tight">
               {getCustomerFullName(order)}
             </h3>
             <div className="flex flex-wrap items-center gap-2 mt-1.5">
+              <OrderStatusPill order={order} />
               <OrderMetaPill>
                 {formatDate(order.date || order.created_at || order.date_add)}
               </OrderMetaPill>

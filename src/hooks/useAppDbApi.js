@@ -230,13 +230,19 @@ export async function resolveOrdersScopeFromDb(accessAccountId, configHint = '')
   return null;
 }
 
-export async function getOrdersFromServerDb(scopeKey, { offset, limit } = {}) {
+export async function getOrdersFromServerDb(scopeKey, { offset, limit, sort } = {}) {
   const requestPayload = { scopeKey };
   if (offset !== undefined) {
     requestPayload.offset = offset;
   }
   if (limit !== undefined) {
     requestPayload.limit = limit;
+  }
+  if (sort?.field) {
+    requestPayload.sortBy = sort.field;
+  }
+  if (sort?.direction) {
+    requestPayload.sortDir = sort.direction;
   }
   const { data } = await callAppDb('get_orders', requestPayload);
   return data;

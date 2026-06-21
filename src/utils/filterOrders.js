@@ -1,7 +1,9 @@
-import { getOrderPhone, getOrderStatusLabel } from './orderFormat';
+import { getCustomerFullName, getOrderPhone, getOrderStatusLabel } from './orderFormat';
 
 export const EMPTY_FILTERS = {
   status: '',
+  orderId: '',
+  surname: '',
   amountFrom: '',
   amountTo: '',
   dateFrom: '',
@@ -9,6 +11,13 @@ export const EMPTY_FILTERS = {
   email: '',
   phone: '',
 };
+
+const MIN_TEXT_FILTER_LENGTH = 3;
+
+function isDeferredTextFilter(value) {
+  const text = String(value || '').trim();
+  return text.length >= MIN_TEXT_FILTER_LENGTH;
+}
 
 function parseOrderDate(order) {
   const raw = order.date || order.created_at || order.date_add;
@@ -20,6 +29,26 @@ function parseOrderDate(order) {
 
 function normalizePhone(value) {
   return String(value || '').replace(/\D/g, '');
+}
+
+function getCustomerFilterText(order) {
+  const bill = order?.bill_address;
+  if (!bill) {
+    return getCustomerFullName(order).toLowerCase();
+  }
+
+  return [bill.surname, bill.name, bill.company_name]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function getOrderIdText(order) {
+  const id = order?.id ?? order?.order_id;
+  if (id == null || id === '') {
+    return '';
+  }
+  return String(id);
 }
 
 export function getUniqueOrderStatuses(orders) {
@@ -37,6 +66,17 @@ export function filterOrders(orders, filters) {
   return orders.filter((order) => {
     if (filters.status) {
       if (getOrderStatusLabel(order) !== filters.status) return false;
+    }
+
+    if (isDeferredTextFilter(filters.orderId)) {
+      const query = String(filters.orderId).trim();
+      const id = getOrderIdText(order);
+      if (!id.includes(query)) return false;
+    }
+
+    if (isDeferredTextFilter(filters.surname)) {
+      const query = String(filters.surname).toLowerCase().trim();
+      if (!getCustomerFilterText(order).includes(query)) return false;
     }
 
     const total = Number(order.total);
@@ -77,5 +117,14 @@ export function filterOrders(orders, filters) {
 }
 
 export function hasActiveFilters(filters) {
-  return Object.values(filters).some((value) => String(value || '').trim() !== '');
+  if (!filters) return false;
+
+  return Object.entries(filters).some(([key, value]) => {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    if (key === 'orderId' || key === 'surname') {
+      return text.length >= MIN_TEXT_FILTER_LENGTH;
+    }
+    return true;
+  });
 }

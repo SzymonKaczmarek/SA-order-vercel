@@ -6,6 +6,7 @@ import {
   IconX,
 } from './Icons';
 import { formatDownloadScopeSummary, parseDownloadScope } from '../utils/bulkOrderDownload';
+import { formatBulkImportResumeSummary } from '../utils/bulkImportResume';
 
 const IMPORT_DESTINATIONS = [
   {
@@ -48,8 +49,13 @@ export function BulkDownloadModal({
   resultCount,
   downloadScope,
   importDestination = 'local',
+  sellasistSummary = '',
+  resumeInfo = null,
   onCancel,
+  onPause,
   onStartDownload,
+  onResumeDownload,
+  onDiscardResume,
   onClose,
 }) {
   const [scope, setScope] = useState('all');
@@ -126,6 +132,43 @@ export function BulkDownloadModal({
         <div className="px-6 py-6 space-y-5">
           {isSetup && (
             <>
+              {sellasistSummary && (
+                <div className="rounded-xl bg-sky-50 border border-sky-100 px-3 py-2 text-xs text-sky-900">
+                  Połączenie Sellasist: <strong>{sellasistSummary}</strong>
+                  <p className="text-[11px] text-sky-800/80 mt-1 leading-relaxed">
+                    Login do panelu SA Order Reader ≠ subdomena sklepu i klucz API Sellasist. Przed
+                    importem sprawdź Konfiguracja API → „Testuj połączenie”.
+                  </p>
+                </div>
+              )}
+
+              {resumeInfo && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+                  <div>
+                    <p className="text-sm font-semibold text-amber-950">Wznowienie pobierania</p>
+                    <p className="text-xs text-amber-900/80 mt-1 leading-relaxed">
+                      {formatBulkImportResumeSummary(resumeInfo)}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={onResumeDownload}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl bg-brand-primary text-white px-4 py-2.5 text-sm font-semibold hover:opacity-90"
+                    >
+                      <ButtonLabel icon={IconDownload}>Wznów pobieranie</ButtonLabel>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onDiscardResume}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl border border-amber-300 bg-white text-amber-900 px-4 py-2.5 text-sm font-semibold hover:bg-amber-100/50"
+                    >
+                      Usuń wznowienie
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-2">
                 <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
                   Gdzie zapisać pobrane zamówienia
@@ -354,13 +397,26 @@ export function BulkDownloadModal({
                 Sellasist: 300/min). Przy dużym imporcie import może trwać dłużej.
               </p>
 
-              <button
-                type="button"
-                onClick={onCancel}
-                className="w-full inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 text-slate-600 px-4 py-2.5 text-sm font-semibold hover:bg-slate-50"
-              >
-                <ButtonLabel icon={IconX}>Anuluj pobieranie</ButtonLabel>
-              </button>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={onPause}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-2.5 text-sm font-semibold hover:bg-amber-100/80"
+                >
+                  Przerwij pobieranie
+                </button>
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-red-200 bg-red-50 text-red-700 px-4 py-2.5 text-sm font-semibold hover:bg-red-100/80"
+                >
+                  <ButtonLabel icon={IconX}>Anuluj</ButtonLabel>
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                <strong>Przerwij</strong> — zatrzymuje import i zostawia pobrane zamówienia (możesz
+                wznowić później). <strong>Anuluj</strong> — cofa cały bieżący import.
+              </p>
             </>
           )}
 

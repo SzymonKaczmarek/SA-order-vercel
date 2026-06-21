@@ -1,6 +1,7 @@
 import React from 'react';
 import { ButtonLabel } from './ButtonLabel';
 import { IconFilterOff } from './Icons';
+import { ORDER_SORT_FIELDS, normalizeOrderSort } from '../utils/sortOrders';
 
 function FilterField({ label, children }) {
   return (
@@ -19,12 +20,17 @@ const inputClass =
 export function OrdersFilters({
   filters,
   onChange,
+  orderSort,
+  onSortChange,
   statuses,
   onResetFilters,
   filteredCount,
   totalCount,
 }) {
   const set = (key, value) => onChange({ ...filters, [key]: value });
+  const sort = normalizeOrderSort(orderSort);
+  const setSortField = (field) => onSortChange({ ...sort, field });
+  const setSortDirection = (direction) => onSortChange({ ...sort, direction });
 
   return (
     <div className="rounded-3xl border border-slate-200 bg-white p-4 space-y-4">
@@ -35,6 +41,32 @@ export function OrdersFilters({
           <span className="text-xs text-slate-500">
             {filteredCount} / {totalCount}
           </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <FilterField label="Sortuj po">
+            <select
+              value={sort.field}
+              onChange={(e) => setSortField(e.target.value)}
+              className={inputClass}
+            >
+              {ORDER_SORT_FIELDS.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </FilterField>
+          <FilterField label="Kierunek">
+            <select
+              value={sort.direction}
+              onChange={(e) => setSortDirection(e.target.value)}
+              className={inputClass}
+            >
+              <option value="desc">Malejąco</option>
+              <option value="asc">Rosnąco</option>
+            </select>
+          </FilterField>
         </div>
 
         <FilterField label="Status">
@@ -51,6 +83,28 @@ export function OrdersFilters({
             ))}
           </select>
         </FilterField>
+
+        <div className="grid grid-cols-2 gap-2">
+          <FilterField label="ID zamówienia">
+            <input
+              type="text"
+              inputMode="numeric"
+              value={filters.orderId}
+              onChange={(e) => set('orderId', e.target.value)}
+              className={inputClass}
+              placeholder="min. 3 znaki, np. 12345"
+            />
+          </FilterField>
+          <FilterField label="Nazwisko">
+            <input
+              type="text"
+              value={filters.surname}
+              onChange={(e) => set('surname', e.target.value)}
+              className={inputClass}
+              placeholder="min. 3 znaki, np. Kowalski"
+            />
+          </FilterField>
+        </div>
 
         <div className="grid grid-cols-2 gap-2">
           <FilterField label="Kwota od">

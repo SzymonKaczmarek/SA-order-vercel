@@ -22,6 +22,16 @@ function buildConfig(config) {
   };
 }
 
+export function normalizeSellasistApiErrorMessage(message, account = '') {
+  const text = String(message || '').trim();
+  if (!/unknown user/i.test(text)) {
+    return text;
+  }
+
+  const shop = account ? `${account}.sellasist.pl` : 'twoje-konto.sellasist.pl';
+  return `Sellasist odrzucił połączenie (Unknown user). Sprawdź subdomenę sklepu (${shop}) i klucz API w Konfiguracji — login do panelu SA Order Reader to coś innego niż dane API Sellasist.`;
+}
+
 function normalizeApiFetchError(err, path) {
   const msg = String(err?.message || err || '');
 
@@ -99,7 +109,9 @@ async function callApi(path, payload, { signal } = {}) {
   }
 
   if (!res.ok) {
-    const apiError = new Error(data?.error || `Błąd serwera (${res.status}).`);
+    const account = normalizeAccount(payload?.account);
+    const rawError = data?.error || `Błąd serwera (${res.status}).`;
+    const apiError = new Error(normalizeSellasistApiErrorMessage(rawError, account));
     logEvent({
       level: 'error',
       category: 'api',
